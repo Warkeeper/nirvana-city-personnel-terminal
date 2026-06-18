@@ -564,12 +564,13 @@ func (s *Store) SearchResidents(ctx context.Context, in ResidentSearchInput) ([]
 	kind := strings.TrimSpace(in.Kind)
 	code := normalizeCode(in.Code)
 	name := strings.TrimSpace(in.Name)
+	codeLike := ""
 	matchAny := false
 	if code == "" && name == "" && query != "" {
 		if kind == KindPlayer {
-			code = normalizeCode(query)
+			codeLike = normalizeCode(query)
 		} else {
-			code = normalizeCode(query)
+			codeLike = normalizeCode(query)
 			name = query
 			matchAny = true
 		}
@@ -583,6 +584,7 @@ func (s *Store) SearchResidents(ctx context.Context, in ResidentSearchInput) ([]
 	roles, err := s.searchResidentRows(ctx, residentSearchOptions{
 		Kind:      kind,
 		CodeExact: code,
+		CodeLike:  codeLike,
 		NameLike:  name,
 		Limit:     in.Limit,
 		MatchAny:  matchAny,
@@ -847,6 +849,7 @@ func (s *Store) loadIdentityHistoryForCodes(ctx context.Context, codes []string)
 type residentSearchOptions struct {
 	Kind      string
 	CodeExact string
+	CodeLike  string
 	NameLike  string
 	Limit     int
 	MatchAny  bool
@@ -868,6 +871,10 @@ func (s *Store) searchResidentRows(ctx context.Context, opts residentSearchOptio
 			matchClauses = append(matchClauses, "code = ?")
 			args = append(args, opts.CodeExact)
 		}
+		if opts.CodeLike != "" {
+			matchClauses = append(matchClauses, "code LIKE ? ESCAPE '\\'")
+			args = append(args, "%"+escapeLike(opts.CodeLike)+"%")
+		}
 		if opts.NameLike != "" {
 			matchClauses = append(matchClauses, "name LIKE ? ESCAPE '\\'")
 			args = append(args, "%"+escapeLike(opts.NameLike)+"%")
@@ -879,6 +886,10 @@ func (s *Store) searchResidentRows(ctx context.Context, opts residentSearchOptio
 		if opts.CodeExact != "" {
 			clauses = append(clauses, "code = ?")
 			args = append(args, opts.CodeExact)
+		}
+		if opts.CodeLike != "" {
+			clauses = append(clauses, "code LIKE ? ESCAPE '\\'")
+			args = append(args, "%"+escapeLike(opts.CodeLike)+"%")
 		}
 		if opts.NameLike != "" {
 			clauses = append(clauses, "name LIKE ? ESCAPE '\\'")
@@ -1129,18 +1140,23 @@ func (s *Store) loadTravelExtensions(ctx context.Context, travelID int64) ([]Tim
 func (s *Store) todayStats(ctx context.Context) (TodayStats, error) {
 	now := s.now().In(s.loc)
 	stats := TodayStats{}
-	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, s.loc).Format(time.RFC3339)
-	end := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, s.loc).Format(time.RFC3339)
+	session, err := s.currentSession(ctx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return stats, nil
+	}
+	if err != nil {
+		return stats, err
+	}
 	nowText := now.Format(time.RFC3339)
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*)
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*)
 		FROM travel_records
-		WHERE canceled_at IS NULL AND enter_at >= ? AND enter_at < ?`, start, end).Scan(&stats.TodayEntered)
+		WHERE session_id = ? AND canceled_at IS NULL`, session.ID).Scan(&stats.TodayEntered)
 	if err != nil {
 		return stats, err
 	}
 	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*)
 		FROM travel_records
-		WHERE canceled_at IS NULL AND hidden_at IS NULL AND leave_at > ?`, nowText).Scan(&stats.CurrentInCity)
+		WHERE session_id = ? AND canceled_at IS NULL AND hidden_at IS NULL AND leave_at > ?`, session.ID, nowText).Scan(&stats.CurrentInCity)
 	if err != nil {
 		return stats, err
 	}
@@ -1151,7 +1167,7 @@ func (s *Store) todayStats(ctx context.Context) (TodayStats, error) {
 			ELSE 0
 		END)
 		FROM gold_records
-		WHERE voided = 0 AND occurred_at >= ? AND occurred_at < ?`, GoldIn, GoldOut, GoldAllocate, start, end).Scan(&dailyExpense)
+		WHERE voided = 0 AND occurred_at >= ?`, GoldIn, GoldOut, GoldAllocate, session.OpenedAt).Scan(&dailyExpense)
 	if err != nil {
 		return stats, err
 	}

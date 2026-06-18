@@ -157,6 +157,16 @@ func (e *testEnv) searchResidents(t *testing.T, kind, code, name string, limit i
 	return out.Residents
 }
 
+func (e *testEnv) searchResidentsQuery(t *testing.T, kind, query string, limit int) []RoleDTO {
+	t.Helper()
+	var out struct {
+		Residents []RoleDTO `json:"residents"`
+	}
+	path := "/api/v1/residents/search?kind=" + url.QueryEscape(kind) + "&q=" + url.QueryEscape(query) + "&limit=" + itoa(int64(limit))
+	e.getJSON(t, path, &out)
+	return out.Residents
+}
+
 func TestResidentCodeOpaqueAndGlobalUnique(t *testing.T) {
 	env := newTestEnv(t)
 	env.openCity(t, "alice")
@@ -186,9 +196,17 @@ func TestResidentCodeOpaqueAndGlobalUnique(t *testing.T) {
 	if len(playerMatches) != 0 {
 		t.Fatalf("player exact search matched 1234 against 01234: %#v", playerMatches)
 	}
+	playerMatches = env.searchResidentsQuery(t, KindPlayer, "123", 5)
+	if len(playerMatches) != 1 || playerMatches[0].Code != "01234" {
+		t.Fatalf("player fuzzy search for 123 should find 01234: %#v", playerMatches)
+	}
 	npcMatches := env.searchResidents(t, KindNPC, "1234", "", 5)
 	if len(npcMatches) != 1 || npcMatches[0].Code != "1234" {
 		t.Fatalf("npc exact search for 1234 = %#v", npcMatches)
+	}
+	npcMatches = env.searchResidents(t, KindNPC, "", "号", 5)
+	if len(npcMatches) != 1 || npcMatches[0].Code != "1234" {
+		t.Fatalf("npc fuzzy name search for 号 = %#v", npcMatches)
 	}
 }
 
@@ -227,11 +245,35 @@ func TestInteractiveStateAndGoldRecordsAreSessionScoped(t *testing.T) {
 	if len(state.Session.Records) != 0 {
 		t.Fatalf("new session leaked old gold records: %#v", state.Session.Records)
 	}
+	if got := state.Stats.DailyExpense; got != 0 {
+		t.Fatalf("new session daily expense included old session records: %d", got)
+	}
+	if got := state.Stats.TodayEntered; got != 0 {
+		t.Fatalf("new session today entered included old session records: %d", got)
+	}
+	if got := state.Stats.CurrentInCity; got != 0 {
+		t.Fatalf("new session current in city included old session records: %d", got)
+	}
 
-	env.enterPlayer(t, "enter-current", "CUR-001", "当前居民", 2)
+	state = env.enterPlayer(t, "enter-current", "CUR-001", "当前居民", 2)
+	if got := state.Stats.TodayEntered; got != 1 {
+		t.Fatalf("current session today entered = %d, want 1", got)
+	}
+	if got := state.Stats.CurrentInCity; got != 1 {
+		t.Fatalf("current session current in city = %d, want 1", got)
+	}
 	state = env.gold(t, "gold-current", "CUR-001", GoldOut, 1)
 	if len(state.Session.Records) != 1 || state.Session.Records[0].Code != "CUR-001" {
 		t.Fatalf("gold write returned records outside current session: %#v", state.Session.Records)
+	}
+	if got := state.Stats.DailyExpense; got != 1 {
+		t.Fatalf("current session daily expense = %d, want 1", got)
+	}
+	if got := state.Stats.TodayEntered; got != 1 {
+		t.Fatalf("gold write returned today entered = %d, want 1", got)
+	}
+	if got := state.Stats.CurrentInCity; got != 1 {
+		t.Fatalf("gold write returned current in city = %d, want 1", got)
 	}
 
 	var boot AppState
@@ -241,6 +283,15 @@ func TestInteractiveStateAndGoldRecordsAreSessionScoped(t *testing.T) {
 	}
 	if len(boot.Session.Records) != 1 || boot.Session.Records[0].Code != "CUR-001" {
 		t.Fatalf("bootstrap returned non-current gold records: %#v", boot.Session.Records)
+	}
+	if got := boot.Stats.DailyExpense; got != 1 {
+		t.Fatalf("bootstrap daily expense = %d, want 1", got)
+	}
+	if got := boot.Stats.TodayEntered; got != 1 {
+		t.Fatalf("bootstrap today entered = %d, want 1", got)
+	}
+	if got := boot.Stats.CurrentInCity; got != 1 {
+		t.Fatalf("bootstrap current in city = %d, want 1", got)
 	}
 
 	exported, err := env.store.ExportData(context.Background())
@@ -256,6 +307,9 @@ func TestCloseCityClearsPanelAndKeepsTravelExport(t *testing.T) {
 	env := newTestEnv(t)
 	env.openCity(t, "closer")
 	state := env.enterPlayer(t, "enter-close", "C-001", "闭城居民", 1)
+	if got := state.Stats.TodayEntered; got != 1 {
+		t.Fatalf("today entered before close = %d", got)
+	}
 	if got := state.Stats.CurrentInCity; got != 1 {
 		t.Fatalf("current in city before close = %d", got)
 	}
@@ -271,6 +325,9 @@ func TestCloseCityClearsPanelAndKeepsTravelExport(t *testing.T) {
 	}
 	if got := state.Stats.CurrentInCity; got != 0 {
 		t.Fatalf("current in city after close = %d", got)
+	}
+	if got := state.Stats.TodayEntered; got != 0 {
+		t.Fatalf("today entered after close = %d", got)
 	}
 	if len(state.HistoricalPlayers) != 0 {
 		t.Fatalf("closed interactive state should not include historical players: %#v", state.HistoricalPlayers)

@@ -152,31 +152,6 @@
                     .map(dept => ({department: dept, members: groups.get(dept)}))
                     .concat(Array.from(groups.keys()).filter(dept => !this.departments.includes(dept)).map(dept => ({department: dept, members: groups.get(dept)})))
             },
-            npcGroupRows() {
-                const rows = []
-                let currentRow = []
-                let currentCardCount = 0
-                this.groupedNpcs.forEach((group) => {
-                    const groupCardCount = (group.members || []).length
-                    if (!currentRow.length) {
-                        currentRow = [group]
-                        currentCardCount = groupCardCount
-                        return
-                    }
-                    if (currentRow.length < 2 && currentCardCount < 5) {
-                        currentRow.push(group)
-                        rows.push(currentRow)
-                        currentRow = []
-                        currentCardCount = 0
-                        return
-                    }
-                    rows.push(currentRow)
-                    currentRow = [group]
-                    currentCardCount = groupCardCount
-                })
-                if (currentRow.length) rows.push(currentRow)
-                return rows
-            },
             dailyExpense() { return this.serverStats.dailyExpense || 0 },
             latestOperationTimeText() { return this.session.latestOperation?.time || '暂无' },
             latestOperationContentText() { return this.session.latestOperation?.content || '暂无' },
@@ -261,12 +236,17 @@
             async save() {},
             async load() { await this.refresh() },
             normalizeResidentCode(code) { return String(code || '').trim() },
-            getNpcGroupStyle(row, groupIndex) { return {'--npc-group-span': this.getNpcGroupSpan(row, groupIndex)} },
-            getNpcGroupSpan(row, groupIndex) {
-                if (!Array.isArray(row) || row.length <= 1) return 5
-                const firstCount = Math.max(1, (row[0].members || []).length)
-                const firstSpan = Math.min(4, firstCount)
-                return groupIndex === 0 ? firstSpan : 5 - firstSpan
+            getNpcGroupColumns(group) {
+                return Math.min(4, Math.max(1, (group?.members || []).length))
+            },
+            getNpcGroupStyle(group) {
+                const columns = this.getNpcGroupColumns(group)
+                const cardWidth = 176
+                const gap = 8
+                return {
+                    '--npc-group-columns': String(columns),
+                    '--npc-group-width': `${columns * cardWidth + (columns - 1) * gap}px`
+                }
             },
             formatStayHoursTooltip(value) {
                 const hours = Number(value)
@@ -576,7 +556,7 @@
                 const searchCode = this.normalizeResidentCode(this.newRoleCode)
                 if (!searchCode) return this.$message.warning('请输入编号后再搜索')
                 try {
-                    const matches = await this.searchResidents({kind: 'player', code: searchCode, limit: 5})
+                    const matches = await this.searchResidents({kind: 'player', q: searchCode, limit: 5})
                     this.roleSearchPerformed = true
                     this.roleMatchedCandidates = matches.map((role, index) => ({...role, _candidateKey: `${role.code}-${index}`}))
                     this.roleSelectedCandidateKey = ''

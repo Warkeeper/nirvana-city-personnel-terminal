@@ -219,26 +219,24 @@
         }
 
         .npc-role-buttons {
-            --npc-card-width: 176px;
+            --npc-card-min-width: 156px;
+            --npc-card-max-width: 176px;
             --npc-card-gap: 8px;
-            --npc-row-width: 912px;
             display: flex;
-            flex-direction: column;
-            gap: 14px;
-            max-width: var(--npc-row-width);
-        }
-
-        .npc-group-row {
-            display: grid;
-            grid-template-columns: repeat(5, minmax(0, var(--npc-card-width)));
-            gap: var(--npc-card-gap);
+            flex-direction: row;
+            flex-wrap: wrap;
             align-items: flex-start;
+            justify-content: flex-start;
+            gap: 12px var(--npc-card-gap);
+            max-width: none;
         }
 
         .npc-group-members {
             display: grid;
-            grid-template-columns: repeat(var(--npc-group-span, 5), minmax(0, var(--npc-card-width)));
+            grid-template-columns: repeat(var(--npc-group-columns, 1), minmax(var(--npc-card-min-width), var(--npc-card-max-width)));
             gap: var(--npc-card-gap);
+            justify-content: start;
+            align-items: stretch;
         }
 
         .npc-search-results {
@@ -272,12 +270,14 @@
             }
 
             .npc-role-buttons {
-                display: block;
+                flex-direction: column;
+                flex-wrap: nowrap;
                 max-width: none;
             }
 
-            .npc-group-row {
-                display: block;
+            .npc-group {
+                width: 100%;
+                flex-basis: auto;
             }
 
             .npc-group-members {
@@ -721,22 +721,23 @@
         }
 
         .npc-group {
-            flex: 0 1 auto;
-            grid-column: span var(--npc-group-span, 5);
+            flex: 0 1 var(--npc-group-width, var(--npc-card-max-width));
             max-width: 100%;
-            margin-bottom: 0;
+            margin: 0;
         }
 
         .npc-group-title {
+            display: flex;
+            align-items: center;
+            gap: 4px;
             font-size: 13px;
             color: #606266;
             margin: 0 6px 6px;
         }
 
-        @media (max-width: 768px) {
-            .npc-group {
-                margin-bottom: 10px;
-            }
+        .npc-group-count {
+            font-size: 12px;
+            opacity: .72;
         }
 
         .identity-history {
@@ -1091,26 +1092,24 @@
         <el-card>
             <div class="role-buttons npc-role-buttons">
                 <div
-                        v-for="(row, rowIndex) in npcGroupRows"
-                        :key="`npc-row-${rowIndex}`"
-                        class="npc-group-row"
+                        v-for="group in groupedNpcs"
+                        :key="group.department"
+                        class="npc-group"
+                        :style="getNpcGroupStyle(group)"
                 >
-                    <div
-                            v-for="(group, groupIndex) in row"
-                            :key="group.department"
-                            class="npc-group"
-                            :style="getNpcGroupStyle(row, groupIndex)"
-                    >
-                        <div class="npc-group-title">{{ group.department }}</div>
-                        <div class="npc-group-members">
-                            <div
-                                    v-for="r in group.members"
-                                    :key="r.id || `${r.code}-${r.name}`"
-                                    class="resident-card"
-                                    :style="getNpcResidentCardStyle()"
-                                    @click="openOperate(r)"
-                                    @contextmenu.prevent="openSummary(r)"
-                            >
+                    <div class="npc-group-title">
+                        <span>{{ group.department }}</span>
+                        <span class="npc-group-count">· {{ group.members.length }}人</span>
+                    </div>
+                    <div class="npc-group-members">
+                        <div
+                                v-for="r in group.members"
+                                :key="r.id || `${r.code}-${r.name}`"
+                                class="resident-card"
+                                :style="getNpcResidentCardStyle()"
+                                @click="openOperate(r)"
+                                @contextmenu.prevent="openSummary(r)"
+                        >
                             <div class="resident-title">
                                 <strong class="resident-name-edit">
                                     <span class="resident-name-text" title="点击编辑资料和备注" @click.stop="editResidentProfile(r)">{{ displayResidentName(r.name) }}</span>
@@ -1132,7 +1131,6 @@
                         </div>
                     </div>
                 </div>
-            </div>
             </div>
         </el-card>
     </div>
