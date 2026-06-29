@@ -129,11 +129,11 @@ func validateMergeWorkbook(book *XLSXWorkbook) error {
 	requiredHeaders := map[string][]string{
 		"数据库":      {"姓名", "编号", "金条余额", "常驻居民/城邦居民", "当前身份", "历史身份记录", "备注"},
 		"金条流水":     {"时间", "编号", "姓名", "当前身份", "类型", "数量", "操作后余额", "备注", "状态", "操作员"},
-		"玩家进出城记录":  {"开城记录ID", "姓名", "编号", "当前身份", "进城时间", "离城时间", "时长增加记录", "操作员"},
+		"玩家进出城记录":  {"开城时间", "姓名", "编号", "当前身份", "进城时间", "离城时间", "时长增加记录", "操作员"},
 		"身份历史":     {"时间", "编号", "姓名快照", "身份", "状态"},
 		"时长增加记录":   {"进出城记录ID", "编号", "姓名", "增加分钟", "操作时间", "操作员"},
-		"开城记录":     {"ID", "开城时间", "关城时间", "操作员", "备注"},
-		"已取消进出城记录": {"开城记录ID", "姓名", "编号", "当前身份", "进城时间", "离城时间", "取消时间", "操作员"},
+		"开城记录":     {"开城时间", "关城时间", "操作员", "备注"},
+		"已取消进出城记录": {"开城时间", "姓名", "编号", "当前身份", "进城时间", "离城时间", "取消时间", "操作员"},
 	}
 	for sheet, headers := range requiredHeaders {
 		if err := requireHeaders(book.Sheets[sheet], headers); err != nil {
@@ -190,13 +190,9 @@ func (s *Store) mergeResidents(ctx context.Context, tx *sql.Tx, sheet *XLSXSheet
 	return nil
 }
 
-func (s *Store) mergeSessions(ctx context.Context, tx *sql.Tx, sheet *XLSXSheet, report *MergeReport) (map[string]int64, error) {
-	sourceToLocal := map[string]int64{}
+func (s *Store) mergeSessions(ctx context.Context, tx *sql.Tx, sheet *XLSXSheet, report *MergeReport) (map[string]bool, error) {
+	sourceSessions := map[string]bool{}
 	for _, row := range sheet.Rows {
-		sourceID := textCell(row, "ID")
-		if sourceID == "" {
-			return nil, mergeCellError(sheet.Name, row.Index, "ID", "不能为空")
-		}
 		openedAt, err := parseMergeTime(s, sheet.Name, row, "开城时间", true)
 		if err != nil {
 			return nil, err
@@ -210,29 +206,24 @@ func (s *Store) mergeSessions(ctx context.Context, tx *sql.Tx, sheet *XLSXSheet,
 			return nil, mergeCellError(sheet.Name, row.Index, "操作员", "不能为空")
 		}
 		note := textCell(row, "备注")
-		var localID int64
-		err = tx.QueryRowContext(ctx, "SELECT id FROM city_sessions WHERE opened_at = ? AND operator = ? ORDER BY id LIMIT 1", openedAt, operator).Scan(&localID)
+		var existing string
+		err = tx.QueryRowContext(ctx, "SELECT opened_at FROM city_sessions WHERE opened_at = ?", openedAt).Scan(&existing)
 		if errors.Is(err, sql.ErrNoRows) {
-			res, err := tx.ExecContext(ctx, "INSERT INTO city_sessions(opened_at, closed_at, operator, note) VALUES(?, ?, ?, ?)", openedAt, nullableString(closedAt), operator, note)
-			if err != nil {
-				return nil, err
-			}
-			localID, err = res.LastInsertId()
-			if err != nil {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO city_sessions(opened_at, closed_at, operator, note) VALUES(?, ?, ?, ?)", openedAt, nullableString(closedAt), operator, note); err != nil {
 				return nil, err
 			}
 			report.addInserted(sheet.Name)
 		} else if err != nil {
 			return nil, err
 		} else {
-			if _, err := tx.ExecContext(ctx, "UPDATE city_sessions SET closed_at = ?, note = ? WHERE id = ?", nullableString(closedAt), note, localID); err != nil {
+			if _, err := tx.ExecContext(ctx, "UPDATE city_sessions SET closed_at = ?, operator = ?, note = ? WHERE opened_at = ?", nullableString(closedAt), operator, note, openedAt); err != nil {
 				return nil, err
 			}
 			report.addUpdated(sheet.Name)
 		}
-		sourceToLocal[sourceID] = localID
+		sourceSessions[openedAt] = true
 	}
-	return sourceToLocal, nil
+	return sourceSessions, nil
 }
 
 func (s *Store) mergeIdentityHistory(ctx context.Context, tx *sql.Tx, sheet *XLSXSheet, report *MergeReport) error {
@@ -348,7 +339,7 @@ func (s *Store) mergeGoldRecords(ctx context.Context, tx *sql.Tx, sheet *XLSXShe
 	return nil
 }
 
-func (s *Store) mergeTravelRows(ctx context.Context, tx *sql.Tx, sheet *XLSXSheet, sourceSessions map[string]int64, canceled bool, report *MergeReport) error {
+func (s *Store) mergeTravelRows(ctx context.Context, tx *sql.Tx, sheet *XLSXSheet, sourceSessions map[string]bool, canceled bool, report *MergeReport) error {
 	for _, row := range sheet.Rows {
 		code, err := requireTextCodeCell(sheet.Name, row, "编号")
 		if err != nil {
@@ -357,13 +348,12 @@ func (s *Store) mergeTravelRows(ctx context.Context, tx *sql.Tx, sheet *XLSXShee
 		if err := requireResidentExists(ctx, tx, sheet.Name, row.Index, code); err != nil {
 			return err
 		}
-		sourceSessionID := textCell(row, "开城记录ID")
-		if sourceSessionID == "" {
-			return mergeCellError(sheet.Name, row.Index, "开城记录ID", "不能为空")
+		sessionOpenedAt, err := parseMergeTime(s, sheet.Name, row, "开城时间", true)
+		if err != nil {
+			return err
 		}
-		localSessionID, ok := sourceSessions[sourceSessionID]
-		if !ok {
-			return mergeCellError(sheet.Name, row.Index, "开城记录ID", fmt.Sprintf("未找到对应开城记录 %s", sourceSessionID))
+		if !sourceSessions[sessionOpenedAt] {
+			return mergeCellError(sheet.Name, row.Index, "开城时间", fmt.Sprintf("未找到对应开城记录 %s", textCell(row, "开城时间")))
 		}
 		name := textCell(row, "姓名")
 		identity := textCell(row, "当前身份")
@@ -389,14 +379,14 @@ func (s *Store) mergeTravelRows(ctx context.Context, tx *sql.Tx, sheet *XLSXShee
 		}
 		var id int64
 		err = tx.QueryRowContext(ctx, `SELECT id FROM travel_records
-			WHERE session_id = ? AND resident_code = ? AND enter_at = ?
-			ORDER BY id LIMIT 1`, localSessionID, code, enterAt).Scan(&id)
+			WHERE session_opened_at = ? AND resident_code = ? AND enter_at = ?
+			ORDER BY id LIMIT 1`, sessionOpenedAt, code, enterAt).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			res, err := tx.ExecContext(ctx, `INSERT INTO travel_records(
-				session_id, resident_code, resident_name_snapshot, identity_snapshot, enter_at, leave_at,
+				session_opened_at, resident_code, resident_name_snapshot, identity_snapshot, enter_at, leave_at,
 				stay_minutes, canceled_at, hidden_at, hidden_after_leave, operator, created_at
 			) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-				localSessionID, code, name, identity, enterAt, leaveAt, stayMinutes, nullableString(canceledAt), nullableString(canceledAt), operator, s.nowString())
+				sessionOpenedAt, code, name, identity, enterAt, leaveAt, stayMinutes, nullableString(canceledAt), nullableString(canceledAt), operator, s.nowString())
 			if err != nil {
 				return err
 			}

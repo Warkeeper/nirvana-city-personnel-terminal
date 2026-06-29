@@ -15,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 type Store struct {
 	db      *sql.DB
@@ -111,6 +111,9 @@ func (s *Store) configure(ctx context.Context) error {
 }
 
 func (s *Store) needsMigration(ctx context.Context) (bool, error) {
+	if err := s.rejectLegacySchema(ctx); err != nil {
+		return false, err
+	}
 	var name string
 	err := s.db.QueryRowContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").Scan(&name)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -124,6 +127,41 @@ func (s *Store) needsMigration(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return current < schemaVersion, nil
+}
+
+func (s *Store) rejectLegacySchema(ctx context.Context) error {
+	cityID, err := s.tableHasColumn(ctx, "city_sessions", "id")
+	if err != nil {
+		return err
+	}
+	travelSessionID, err := s.tableHasColumn(ctx, "travel_records", "session_id")
+	if err != nil {
+		return err
+	}
+	if cityID || travelSessionID {
+		return fmt.Errorf("unsupported legacy database schema: move or delete %s before using this version; historical migration is intentionally not supported", s.dbPath)
+	}
+	return nil
+}
+
+func (s *Store) tableHasColumn(ctx context.Context, table, column string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, typ string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func (s *Store) currentSchemaVersion(ctx context.Context) (int, error) {
@@ -260,7 +298,13 @@ func parseDBTime(value string, loc *time.Location) (time.Time, error) {
 	if t, err := time.ParseInLocation("2006-01-02 15:04:05", raw, loc); err == nil {
 		return t, nil
 	}
+	if t, err := time.ParseInLocation("2006-01-02 15:04", raw, loc); err == nil {
+		return t, nil
+	}
 	if t, err := time.ParseInLocation("2006/1/2 15:04:05", raw, loc); err == nil {
+		return t, nil
+	}
+	if t, err := time.ParseInLocation("2006/1/2 15:04", raw, loc); err == nil {
 		return t, nil
 	}
 	return time.Time{}, fmt.Errorf("invalid time %q", value)

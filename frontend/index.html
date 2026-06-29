@@ -420,6 +420,32 @@
         .enter-time-buttons .el-radio-button.is-active .el-radio-button__inner {
             border-color: #409eff;
         }
+        .open-city-form .el-form-item {
+            margin-bottom: 14px;
+        }
+
+        .open-city-time-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .open-city-time-buttons .el-radio-button__inner {
+            border: 1px solid #dcdfe6;
+            border-radius: 16px !important;
+            box-shadow: none;
+            padding: 8px 14px;
+        }
+
+        .open-city-time-buttons .el-radio-button.is-active .el-radio-button__inner {
+            border-color: #409eff;
+        }
+
+        .open-city-custom-time {
+            margin-top: 10px;
+            max-width: 180px;
+        }
+
 
         @media (max-width: 720px) {
             .add-role-dialog {
@@ -940,6 +966,56 @@
             title="当前尚未开城。请先点击“开城”并填写操作员，后续业务记录会自动写入该操作员。"
             style="margin-bottom:12px;"
     ></el-alert>
+
+    <el-dialog
+            title="开城"
+            :visible.sync="openCityVisible"
+            width="440px"
+            custom-class="open-city-dialog"
+            :close-on-click-modal="false"
+    >
+        <el-form label-position="top" class="open-city-form">
+            <el-form-item label="操作员">
+                <el-input
+                        v-model.trim="openCityOperator"
+                        placeholder="操作员"
+                        @keyup.enter.native="submitOpenCity"
+                ></el-input>
+            </el-form-item>
+            <el-form-item label="开城日期">
+                <el-date-picker
+                        v-model="openCityDate"
+                        type="date"
+                        value-format="yyyy-MM-dd"
+                        placeholder="选择日期"
+                        style="width:100%;"
+                ></el-date-picker>
+            </el-form-item>
+            <el-form-item label="开城时间">
+                <el-radio-group v-model="openCityTimeMode" size="small" class="open-city-time-buttons">
+                    <el-radio-button
+                            v-for="time in openCityTimePresets"
+                            :key="time"
+                            :label="time"
+                    >{{ time }}</el-radio-button>
+                    <el-radio-button label="custom">自定义</el-radio-button>
+                </el-radio-group>
+                <el-input
+                        v-if="openCityTimeMode === 'custom'"
+                        v-model.trim="openCityCustomTime"
+                        class="open-city-custom-time"
+                        size="small"
+                        maxlength="5"
+                        placeholder="HH:mm"
+                        @keyup.enter.native="submitOpenCity"
+                ></el-input>
+            </el-form-item>
+        </el-form>
+        <span slot="footer" class="dialog-footer">
+            <el-button @click="openCityVisible=false">取 消</el-button>
+            <el-button type="primary" @click="submitOpenCity">开 城</el-button>
+        </span>
+    </el-dialog>
 
     <!-- ===== Add role ===== -->
     <div style="margin-bottom:12px">

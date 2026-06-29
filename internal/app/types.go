@@ -37,7 +37,6 @@ var DefaultVisibleNPCCodes = []string{
 }
 
 type CitySession struct {
-	ID       int64  `json:"id"`
 	OpenedAt string `json:"openedAt"`
 	ClosedAt string `json:"closedAt,omitempty"`
 	Operator string `json:"operator"`

@@ -18,23 +18,52 @@ var (
 	ErrBadRequest = errors.New("bad request")
 )
 
-func (s *Store) OpenCity(ctx context.Context, operator string) (*AppState, error) {
+func (s *Store) OpenCity(ctx context.Context, operator, openedAt string) (*AppState, error) {
 	operator = strings.TrimSpace(operator)
 	if operator == "" {
 		return nil, fmt.Errorf("%w: operator is required", ErrBadRequest)
 	}
+	openedAtTime, err := parseOpenCityTime(openedAt, s.loc)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadRequest, err)
+	}
+	openedAtText := openedAtTime.In(s.loc).Format(time.RFC3339)
 	if _, err := s.Backup(ctx, "open-city"); err != nil {
 		return nil, fmt.Errorf("open city backup failed: %w", err)
 	}
-	now := s.nowString()
 	if err := s.withTx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, "UPDATE city_sessions SET closed_at = ? WHERE closed_at IS NULL", now); err != nil {
+		var existing string
+		err := tx.QueryRowContext(ctx, "SELECT opened_at FROM city_sessions WHERE opened_at = ?", openedAtText).Scan(&existing)
+		if err == nil {
+			return fmt.Errorf("%w: open city time already exists", ErrConflict)
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO city_sessions(opened_at, operator) VALUES(?, ?)", now, operator); err != nil {
+
+		var active CitySession
+		var closed sql.NullString
+		err = tx.QueryRowContext(ctx, `SELECT opened_at, closed_at, operator FROM city_sessions
+			WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1`).Scan(&active.OpenedAt, &closed, &active.Operator)
+		if err == nil {
+			activeOpenedAt, err := parseDBTime(active.OpenedAt, s.loc)
+			if err != nil {
+				return err
+			}
+			if !openedAtTime.After(activeOpenedAt) {
+				return fmt.Errorf("%w: open city time must be later than the active city session", ErrBadRequest)
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE city_sessions SET closed_at = ? WHERE opened_at = ? AND closed_at IS NULL", openedAtText, active.OpenedAt); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		return s.insertAudit(ctx, tx, "city.open", "开城："+operator, operator, now)
+
+		if _, err := tx.ExecContext(ctx, "INSERT INTO city_sessions(opened_at, operator) VALUES(?, ?)", openedAtText, operator); err != nil {
+			return err
+		}
+		return s.insertAudit(ctx, tx, "city.open", "开城："+operator, operator, openedAtText)
 	}); err != nil {
 		return nil, err
 	}
@@ -48,12 +77,12 @@ func (s *Store) CloseCity(ctx context.Context) (*AppState, error) {
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "UPDATE city_sessions SET closed_at = ? WHERE id = ? AND closed_at IS NULL", now, session.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE city_sessions SET closed_at = ? WHERE opened_at = ? AND closed_at IS NULL", now, session.OpenedAt); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE travel_records
 			SET hidden_at = ?, hidden_after_leave = 1
-			WHERE session_id = ? AND canceled_at IS NULL AND hidden_at IS NULL`, now, session.ID); err != nil {
+			WHERE session_opened_at = ? AND canceled_at IS NULL AND hidden_at IS NULL`, now, session.OpenedAt); err != nil {
 			return err
 		}
 		return s.insertAudit(ctx, tx, "city.close", "闭城："+session.Operator, session.Operator, now)
@@ -93,17 +122,21 @@ func (s *Store) EnterPlayer(ctx context.Context, in EnterResidentInput) (*AppSta
 	if stayMinutes <= 0 {
 		return nil, fmt.Errorf("%w: stay time is invalid", ErrBadRequest)
 	}
-	enterAt, err := parseEnterTime(in.EnterTime, s.now().In(s.loc), s.loc)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrBadRequest, err)
-	}
-	leaveAt := enterAt.Add(time.Duration(stayMinutes) * time.Minute)
 	now := s.nowString()
-	err = s.withTx(ctx, func(tx *sql.Tx) error {
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		session, err := s.currentSessionTx(ctx, tx)
 		if err != nil {
 			return err
 		}
+		sessionOpenedAt, err := parseDBTime(session.OpenedAt, s.loc)
+		if err != nil {
+			return err
+		}
+		enterAt, err := parseEnterTime(in.EnterTime, sessionOpenedAt, s.loc)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrBadRequest, err)
+		}
+		leaveAt := enterAt.Add(time.Duration(stayMinutes) * time.Minute)
 		if err := s.ensureResidentTx(ctx, tx, in.Code, in.Name, KindPlayer, in.Balance, in.Identity, in.Remark, now); err != nil {
 			return err
 		}
@@ -111,10 +144,10 @@ func (s *Store) EnterPlayer(ctx context.Context, in EnterResidentInput) (*AppSta
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO travel_records(
-			session_id, resident_code, resident_name_snapshot, identity_snapshot,
+			session_opened_at, resident_code, resident_name_snapshot, identity_snapshot,
 			enter_at, leave_at, stay_minutes, operator, created_at
 		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			session.ID, in.Code, in.Name, in.Identity, enterAt.In(s.loc).Format(time.RFC3339),
+			session.OpenedAt, in.Code, in.Name, in.Identity, enterAt.In(s.loc).Format(time.RFC3339),
 			leaveAt.In(s.loc).Format(time.RFC3339), stayMinutes, session.Operator, now)
 		if err != nil {
 			return err
@@ -524,7 +557,7 @@ func (s *Store) State(ctx context.Context, csrfToken string) (*AppState, error) 
 	dto.VisibleNPCCodes = visibleCodes
 	dto.HiddenNPCKeys = hiddenKeys
 	if currentSession != nil {
-		players, hidden, suppressed, err := s.loadTravelRoles(ctx, currentSession.ID)
+		players, hidden, suppressed, err := s.loadTravelRoles(ctx, currentSession.OpenedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -735,8 +768,8 @@ func (s *Store) residentTx(ctx context.Context, tx *sql.Tx, code string) (reside
 func (s *Store) currentSessionTx(ctx context.Context, tx *sql.Tx) (*CitySession, error) {
 	var session CitySession
 	var closed sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT id, opened_at, closed_at, operator FROM city_sessions
-		WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1`).Scan(&session.ID, &session.OpenedAt, &closed, &session.Operator)
+	err := tx.QueryRowContext(ctx, `SELECT opened_at, closed_at, operator FROM city_sessions
+		WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1`).Scan(&session.OpenedAt, &closed, &session.Operator)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: no active city session", ErrBadRequest)
 	}
@@ -752,8 +785,8 @@ func (s *Store) currentSessionTx(ctx context.Context, tx *sql.Tx) (*CitySession,
 func (s *Store) currentSession(ctx context.Context) (*CitySession, error) {
 	var session CitySession
 	var closed sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT id, opened_at, closed_at, operator FROM city_sessions
-		WHERE closed_at IS NULL ORDER BY id DESC LIMIT 1`).Scan(&session.ID, &session.OpenedAt, &closed, &session.Operator)
+	err := s.db.QueryRowContext(ctx, `SELECT opened_at, closed_at, operator FROM city_sessions
+		WHERE closed_at IS NULL ORDER BY opened_at DESC LIMIT 1`).Scan(&session.OpenedAt, &closed, &session.Operator)
 	if err != nil {
 		return nil, err
 	}
@@ -1052,15 +1085,15 @@ func (s *Store) isNPCVisible(ctx context.Context, code string) bool {
 	return false
 }
 
-func (s *Store) loadTravelRoles(ctx context.Context, sessionID int64) ([]RoleDTO, []string, []string, error) {
+func (s *Store) loadTravelRoles(ctx context.Context, sessionOpenedAt string) ([]RoleDTO, []string, []string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT t.id, t.resident_code, t.resident_name_snapshot, t.identity_snapshot,
 		t.enter_at, t.leave_at, t.stay_minutes, t.canceled_at, t.hidden_at,
 		COALESCE(r.name, t.resident_name_snapshot), COALESCE(r.kind, ?), COALESCE(r.balance, 0),
 		COALESCE(r.identity_current, t.identity_snapshot), COALESCE(r.remark, '')
 		FROM travel_records t
 		LEFT JOIN residents r ON r.code = t.resident_code
-		WHERE t.session_id = ?
-		ORDER BY t.enter_at ASC, t.id ASC`, KindPlayer, sessionID)
+		WHERE t.session_opened_at = ?
+		ORDER BY t.enter_at ASC, t.id ASC`, KindPlayer, sessionOpenedAt)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1150,13 +1183,13 @@ func (s *Store) todayStats(ctx context.Context) (TodayStats, error) {
 	nowText := now.Format(time.RFC3339)
 	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*)
 		FROM travel_records
-		WHERE session_id = ? AND canceled_at IS NULL`, session.ID).Scan(&stats.TodayEntered)
+		WHERE session_opened_at = ? AND canceled_at IS NULL`, session.OpenedAt).Scan(&stats.TodayEntered)
 	if err != nil {
 		return stats, err
 	}
 	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*)
 		FROM travel_records
-		WHERE session_id = ? AND canceled_at IS NULL AND hidden_at IS NULL AND leave_at > ?`, session.ID, nowText).Scan(&stats.CurrentInCity)
+		WHERE session_opened_at = ? AND canceled_at IS NULL AND hidden_at IS NULL AND leave_at > ?`, session.OpenedAt, nowText).Scan(&stats.CurrentInCity)
 	if err != nil {
 		return stats, err
 	}
@@ -1191,6 +1224,17 @@ func (s *Store) latestAudit(ctx context.Context) (*LatestOperation, error) {
 	return &op, nil
 }
 
+func parseOpenCityTime(raw string, loc *time.Location) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, errors.New("open city time is required")
+	}
+	t, err := parseDBTime(raw, loc)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid open city time %q", raw)
+	}
+	return t.In(loc), nil
+}
 func parseEnterTime(raw string, now time.Time, loc *time.Location) (time.Time, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

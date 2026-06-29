@@ -7,6 +7,9 @@ import (
 )
 
 func (s *Store) migrate(ctx context.Context) error {
+	if err := s.rejectLegacySchema(ctx); err != nil {
+		return err
+	}
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		stmts := []string{
 			`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -14,8 +17,7 @@ func (s *Store) migrate(ctx context.Context) error {
 				applied_at TEXT NOT NULL
 			)`,
 			`CREATE TABLE IF NOT EXISTS city_sessions (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				opened_at TEXT NOT NULL,
+				opened_at TEXT PRIMARY KEY,
 				closed_at TEXT,
 				operator TEXT NOT NULL,
 				note TEXT NOT NULL DEFAULT ''
@@ -55,7 +57,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			)`,
 			`CREATE TABLE IF NOT EXISTS travel_records (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				session_id INTEGER NOT NULL REFERENCES city_sessions(id) ON UPDATE RESTRICT ON DELETE RESTRICT,
+				session_opened_at TEXT NOT NULL REFERENCES city_sessions(opened_at) ON UPDATE RESTRICT ON DELETE RESTRICT,
 				resident_code TEXT NOT NULL REFERENCES residents(code) ON UPDATE RESTRICT ON DELETE RESTRICT,
 				resident_name_snapshot TEXT NOT NULL,
 				identity_snapshot TEXT NOT NULL,
@@ -100,7 +102,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			`CREATE INDEX IF NOT EXISTS idx_identity_history_code ON identity_history(resident_code, occurred_at)`,
 			`CREATE INDEX IF NOT EXISTS idx_gold_records_code_time ON gold_records(resident_code, occurred_at)`,
 			`CREATE INDEX IF NOT EXISTS idx_gold_records_time ON gold_records(occurred_at)`,
-			`CREATE INDEX IF NOT EXISTS idx_travel_records_session ON travel_records(session_id, resident_code)`,
+			`CREATE INDEX IF NOT EXISTS idx_travel_records_session ON travel_records(session_opened_at, resident_code)`,
 			`CREATE INDEX IF NOT EXISTS idx_travel_records_enter ON travel_records(enter_at)`,
 			`CREATE INDEX IF NOT EXISTS idx_travel_records_leave_visible ON travel_records(leave_at, canceled_at, hidden_at)`,
 			`CREATE INDEX IF NOT EXISTS idx_travel_extensions_travel ON travel_extensions(travel_id)`,

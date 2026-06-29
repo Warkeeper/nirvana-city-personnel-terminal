@@ -117,35 +117,35 @@ func (s *Store) goldSheet(ctx context.Context) (Sheet, error) {
 func (s *Store) travelSheets(ctx context.Context) (Sheet, Sheet, error) {
 	active := Sheet{
 		Name:    "玩家进出城记录",
-		Columns: []string{"开城记录ID", "姓名", "编号", "当前身份", "进城时间", "离城时间", "时长增加记录", "操作员"},
+		Columns: []string{"开城时间", "姓名", "编号", "当前身份", "进城时间", "离城时间", "时长增加记录", "操作员"},
 	}
 	canceled := Sheet{
 		Name:    "已取消进出城记录",
-		Columns: []string{"开城记录ID", "姓名", "编号", "当前身份", "进城时间", "离城时间", "取消时间", "操作员"},
+		Columns: []string{"开城时间", "姓名", "编号", "当前身份", "进城时间", "离城时间", "取消时间", "操作员"},
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, session_id, resident_code, resident_name_snapshot, identity_snapshot,
+	rows, err := s.db.QueryContext(ctx, `SELECT id, session_opened_at, resident_code, resident_name_snapshot, identity_snapshot,
 		enter_at, leave_at, canceled_at, operator FROM travel_records ORDER BY enter_at ASC, id ASC`)
 	if err != nil {
 		return active, canceled, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, sessionID int64
-		var code, name, identity, enterAt, leaveAt, operator string
+		var id int64
+		var sessionOpenedAt, code, name, identity, enterAt, leaveAt, operator string
 		var canceledAt sql.NullString
-		if err := rows.Scan(&id, &sessionID, &code, &name, &identity, &enterAt, &leaveAt, &canceledAt, &operator); err != nil {
+		if err := rows.Scan(&id, &sessionOpenedAt, &code, &name, &identity, &enterAt, &leaveAt, &canceledAt, &operator); err != nil {
 			return active, canceled, err
 		}
 		if canceledAt.Valid {
 			canceled.Rows = append(canceled.Rows, map[string]string{
-				"开城记录ID": strconv.FormatInt(sessionID, 10),
-				"姓名":     name,
-				"编号":     code,
-				"当前身份":   identity,
-				"进城时间":   s.formatDisplayTime(enterAt),
-				"离城时间":   s.formatDisplayTime(leaveAt),
-				"取消时间":   s.formatDisplayTime(canceledAt.String),
-				"操作员":    operator,
+				"开城时间": s.formatDisplayTime(sessionOpenedAt),
+				"姓名":   name,
+				"编号":   code,
+				"当前身份": identity,
+				"进城时间": s.formatDisplayTime(enterAt),
+				"离城时间": s.formatDisplayTime(leaveAt),
+				"取消时间": s.formatDisplayTime(canceledAt.String),
+				"操作员":  operator,
 			})
 			continue
 		}
@@ -154,7 +154,7 @@ func (s *Store) travelSheets(ctx context.Context) (Sheet, Sheet, error) {
 			return active, canceled, err
 		}
 		active.Rows = append(active.Rows, map[string]string{
-			"开城记录ID": strconv.FormatInt(sessionID, 10),
+			"开城时间":   s.formatDisplayTime(sessionOpenedAt),
 			"姓名":     name,
 			"编号":     code,
 			"当前身份":   identity,
@@ -234,18 +234,17 @@ func (s *Store) extensionSheet(ctx context.Context) (Sheet, error) {
 func (s *Store) sessionSheet(ctx context.Context) (Sheet, error) {
 	sheet := Sheet{
 		Name:    "开城记录",
-		Columns: []string{"ID", "开城时间", "关城时间", "操作员", "备注"},
+		Columns: []string{"开城时间", "关城时间", "操作员", "备注"},
 	}
-	rows, err := s.db.QueryContext(ctx, "SELECT id, opened_at, closed_at, operator, note FROM city_sessions ORDER BY id ASC")
+	rows, err := s.db.QueryContext(ctx, "SELECT opened_at, closed_at, operator, note FROM city_sessions ORDER BY opened_at ASC")
 	if err != nil {
 		return sheet, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id int64
 		var opened, operator, note string
 		var closed sql.NullString
-		if err := rows.Scan(&id, &opened, &closed, &operator, &note); err != nil {
+		if err := rows.Scan(&opened, &closed, &operator, &note); err != nil {
 			return sheet, err
 		}
 		closedText := ""
@@ -253,7 +252,6 @@ func (s *Store) sessionSheet(ctx context.Context) (Sheet, error) {
 			closedText = s.formatDisplayTime(closed.String)
 		}
 		sheet.Rows = append(sheet.Rows, map[string]string{
-			"ID":   strconv.FormatInt(id, 10),
 			"开城时间": s.formatDisplayTime(opened),
 			"关城时间": closedText,
 			"操作员":  operator,

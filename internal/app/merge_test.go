@@ -31,6 +31,21 @@ func TestMergeRejectsOldThreeSheetWorkbook(t *testing.T) {
 	assertRowCount(t, store, "residents", 0)
 }
 
+func TestMergeRejectsLegacyOpenCityIDColumns(t *testing.T) {
+	store := newMergeStore(t)
+	data := mergeFixture(mergeFixtureOptions{})
+	sheetByName(data, "玩家进出城记录").Columns[0] = "开城记录ID"
+	path := writeMergeWorkbook(t, data)
+
+	_, err := store.MergeWorkbook(context.Background(), path)
+	if err == nil {
+		t.Fatal("expected legacy open city id column to be rejected")
+	}
+	if !strings.Contains(err.Error(), "开城时间") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertRowCount(t, store, "residents", 0)
+}
 func TestMergeWorkbookImportsUpdatesAndAvoidsDuplicates(t *testing.T) {
 	store := newMergeStore(t)
 	path := writeMergeWorkbook(t, mergeFixture(mergeFixtureOptions{}))
@@ -179,7 +194,7 @@ func mergeFixture(opts mergeFixtureOptions) *ExportData {
 		"操作后余额": intText(opts.goldBalance), "备注": opts.goldRemark, "状态": opts.goldStatus, "操作员": "merge-op",
 	}}
 	sheetByName(data, "玩家进出城记录").Rows = []map[string]string{{
-		"开城记录ID": "100", "姓名": opts.residentName, "编号": "01234", "当前身份": "城防部",
+		"开城时间": "2026/6/18 09:00:00", "姓名": opts.residentName, "编号": "01234", "当前身份": "城防部",
 		"进城时间": "2026/6/18 10:00:00", "离城时间": "2026/6/18 12:30:00",
 		"时长增加记录": "2026/6/18 11:00:00 +30分钟", "操作员": "merge-op",
 	}}
@@ -190,10 +205,10 @@ func mergeFixture(opts mergeFixtureOptions) *ExportData {
 		"进出城记录ID": "200", "编号": "01234", "姓名": opts.residentName, "增加分钟": "30", "操作时间": "2026/6/18 11:00:00", "操作员": "merge-op",
 	}}
 	sheetByName(data, "开城记录").Rows = []map[string]string{{
-		"ID": "100", "开城时间": "2026/6/18 09:00:00", "关城时间": "2026/6/18 18:00:00", "操作员": "merge-op", "备注": opts.sessionNote,
+		"开城时间": "2026/6/18 09:00:00", "关城时间": "2026/6/18 18:00:00", "操作员": "merge-op", "备注": opts.sessionNote,
 	}}
 	sheetByName(data, "已取消进出城记录").Rows = []map[string]string{{
-		"开城记录ID": "100", "姓名": "常驻", "编号": "NPC001", "当前身份": "保安部",
+		"开城时间": "2026/6/18 09:00:00", "姓名": "常驻", "编号": "NPC001", "当前身份": "保安部",
 		"进城时间": "2026/6/18 13:00:00", "离城时间": "2026/6/18 14:00:00", "取消时间": "2026/6/18 13:10:00", "操作员": "merge-op",
 	}}
 	return data
@@ -203,11 +218,11 @@ func mergeWorkbookWithResidentRows(rows []map[string]string) *ExportData {
 	return &ExportData{Sheets: []Sheet{
 		{Name: "数据库", Columns: []string{"姓名", "编号", "金条余额", "常驻居民/城邦居民", "当前身份", "历史身份记录", "备注"}, Rows: rows},
 		{Name: "金条流水", Columns: []string{"时间", "编号", "姓名", "当前身份", "类型", "数量", "操作后余额", "备注", "状态", "操作员"}, Rows: []map[string]string{}},
-		{Name: "玩家进出城记录", Columns: []string{"开城记录ID", "姓名", "编号", "当前身份", "进城时间", "离城时间", "时长增加记录", "操作员"}, Rows: []map[string]string{}},
+		{Name: "玩家进出城记录", Columns: []string{"开城时间", "姓名", "编号", "当前身份", "进城时间", "离城时间", "时长增加记录", "操作员"}, Rows: []map[string]string{}},
 		{Name: "身份历史", Columns: []string{"时间", "编号", "姓名快照", "身份", "状态"}, Rows: []map[string]string{}},
 		{Name: "时长增加记录", Columns: []string{"进出城记录ID", "编号", "姓名", "增加分钟", "操作时间", "操作员"}, Rows: []map[string]string{}},
-		{Name: "开城记录", Columns: []string{"ID", "开城时间", "关城时间", "操作员", "备注"}, Rows: []map[string]string{}},
-		{Name: "已取消进出城记录", Columns: []string{"开城记录ID", "姓名", "编号", "当前身份", "进城时间", "离城时间", "取消时间", "操作员"}, Rows: []map[string]string{}},
+		{Name: "开城记录", Columns: []string{"开城时间", "关城时间", "操作员", "备注"}, Rows: []map[string]string{}},
+		{Name: "已取消进出城记录", Columns: []string{"开城时间", "姓名", "编号", "当前身份", "进城时间", "离城时间", "取消时间", "操作员"}, Rows: []map[string]string{}},
 	}}
 }
 

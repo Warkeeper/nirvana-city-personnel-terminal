@@ -87,11 +87,12 @@ func (s *Server) handleOpenCity(w http.ResponseWriter, r *http.Request) {
 	}
 	var in struct {
 		Operator string `json:"operator"`
+		OpenedAt string `json:"openedAt"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	state, err := s.store.OpenCity(r.Context(), in.Operator)
+	state, err := s.store.OpenCity(r.Context(), in.Operator, in.OpenedAt)
 	respond(w, state, err)
 }
 

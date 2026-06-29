@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -100,7 +101,7 @@ func (e *testEnv) writeJSON(t *testing.T, method, path string, payload any, key 
 func (e *testEnv) openCity(t *testing.T, operator string) AppState {
 	t.Helper()
 	var state AppState
-	status := e.writeJSON(t, http.MethodPost, "/api/v1/city/open", map[string]any{"operator": operator}, "open-"+operator, &state)
+	status := e.writeJSON(t, http.MethodPost, "/api/v1/city/open", map[string]any{"operator": operator, "openedAt": e.now.Format(time.RFC3339)}, "open-"+operator, &state)
 	if status != http.StatusOK {
 		t.Fatalf("open city status=%d", status)
 	}
@@ -231,6 +232,64 @@ func TestOpenCityDoesNotClearHistoryAndTracksOperator(t *testing.T) {
 	}
 }
 
+func TestOpenCityUsesProvidedTimeAndRejectsDuplicate(t *testing.T) {
+	env := newTestEnv(t)
+	openedAt := env.now.Format(time.RFC3339)
+	state := env.openCity(t, "gate-op")
+	if state.Session.CurrentSession == nil || state.Session.CurrentSession.OpenedAt != openedAt {
+		t.Fatalf("current session openedAt=%#v want %s", state.Session.CurrentSession, openedAt)
+	}
+
+	var errBody map[string]any
+	status := env.writeJSON(t, http.MethodPost, "/api/v1/city/open", map[string]any{"operator": "dup-op", "openedAt": openedAt}, "open-duplicate", &errBody)
+	if status != http.StatusConflict {
+		t.Fatalf("duplicate open city time status=%d body=%v", status, errBody)
+	}
+}
+
+func TestEnterPlayerTimeUsesCurrentOpenCityDate(t *testing.T) {
+	env := newTestEnv(t)
+	env.now = time.Date(2026, 6, 19, 9, 0, 0, 0, env.now.Location())
+	env.openCity(t, "date-op")
+	env.now = env.now.Add(24 * time.Hour)
+
+	state := env.enterPlayer(t, "enter-open-date", "D-001", "日期居民", 1)
+	role := findPlayer(t, state, "D-001")
+	if got := env.store.formatDisplayTime(role.EnterTime); got != "2026/6/19 14:30:00" {
+		t.Fatalf("enter time date = %q", got)
+	}
+}
+
+func TestNewSchemaUsesOpenedAtSessionKey(t *testing.T) {
+	env := newTestEnv(t)
+	assertColumnPresence(t, env.store, "city_sessions", "id", false)
+	assertColumnPresence(t, env.store, "city_sessions", "opened_at", true)
+	assertColumnPresence(t, env.store, "travel_records", "session_id", false)
+	assertColumnPresence(t, env.store, "travel_records", "session_opened_at", true)
+}
+
+func TestOpenStoreRejectsLegacySessionSchema(t *testing.T) {
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", sqliteDSN(filepath.Join(dir, "ncfms.db")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE city_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        opened_at TEXT NOT NULL,
+        operator TEXT NOT NULL
+    )`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = OpenStore(context.Background(), Config{DataDir: dir})
+	if err == nil || !strings.Contains(err.Error(), "unsupported legacy database schema") {
+		t.Fatalf("expected legacy schema error, got %v", err)
+	}
+}
 func TestInteractiveStateAndGoldRecordsAreSessionScoped(t *testing.T) {
 	env := newTestEnv(t)
 	env.openCity(t, "old-op")
@@ -486,20 +545,20 @@ func TestCSRFAndIdempotency(t *testing.T) {
 
 	key := "same-open-key"
 	var first AppState
-	status := env.writeJSON(t, http.MethodPost, "/api/v1/city/open", map[string]any{"operator": "idem"}, key, &first)
+	status := env.writeJSON(t, http.MethodPost, "/api/v1/city/open", map[string]any{"operator": "idem", "openedAt": env.now.Format(time.RFC3339)}, key, &first)
 	if status != http.StatusOK {
 		t.Fatalf("first idempotent write status=%d", status)
 	}
 	var second AppState
-	status = env.writeJSON(t, http.MethodPost, "/api/v1/city/open", map[string]any{"operator": "idem"}, key, &second)
+	status = env.writeJSON(t, http.MethodPost, "/api/v1/city/open", map[string]any{"operator": "idem", "openedAt": env.now.Format(time.RFC3339)}, key, &second)
 	if status != http.StatusOK {
 		t.Fatalf("replayed idempotent write status=%d", status)
 	}
-	if second.Operator != first.Operator || second.Session.CurrentSession.ID != first.Session.CurrentSession.ID {
+	if second.Operator != first.Operator || second.Session.CurrentSession.OpenedAt != first.Session.CurrentSession.OpenedAt {
 		t.Fatalf("idempotent replay did not return first response")
 	}
 	var conflict map[string]any
-	status = env.writeJSON(t, http.MethodPost, "/api/v1/city/open", map[string]any{"operator": "different"}, key, &conflict)
+	status = env.writeJSON(t, http.MethodPost, "/api/v1/city/open", map[string]any{"operator": "different", "openedAt": env.now.Format(time.RFC3339)}, key, &conflict)
 	if status != http.StatusConflict {
 		t.Fatalf("idempotency conflict status=%d body=%v", status, conflict)
 	}
@@ -542,7 +601,7 @@ func TestBackupOpenCityMigrationAndFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.OpenCity(context.Background(), "backup-op"); err != nil {
+	if _, err := store.OpenCity(context.Background(), "backup-op", now.Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
 	}
 	_ = store.Close()
@@ -579,7 +638,7 @@ func TestBackupOpenCityMigrationAndFailure(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(failDir, "backups"), []byte("not a directory"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := failStore.OpenCity(context.Background(), "blocked"); err == nil {
+	if _, err := failStore.OpenCity(context.Background(), "blocked", now.Format(time.RFC3339)); err == nil {
 		t.Fatalf("open city succeeded despite backup failure")
 	}
 	_ = failStore.Close()
@@ -668,6 +727,16 @@ func sheetRows(t *testing.T, data *ExportData, sheet string) []map[string]string
 	return nil
 }
 
+func assertColumnPresence(t *testing.T, store *Store, table, column string, want bool) {
+	t.Helper()
+	got, err := store.tableHasColumn(context.Background(), table, column)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("column %s.%s presence=%v want %v", table, column, got, want)
+	}
+}
 func itoa(v int64) string {
 	return strconv.FormatInt(v, 10)
 }

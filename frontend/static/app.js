@@ -51,6 +51,12 @@
             summaryVisible: false,
             addVisible: false,
             npcAddVisible: false,
+            openCityVisible: false,
+            openCityOperator: '',
+            openCityDate: '',
+            openCityTimeMode: '14:30',
+            openCityCustomTime: '',
+            openCityTimePresets: ['14:30', '18:30'],
             newRoleName: '',
             newRoleIdentity: '',
             newRoleDepartment: '城防部',
@@ -386,18 +392,42 @@
                 link.click()
                 link.remove()
             },
-            async openCity() {
+            formatLocalDateValue(date = new Date()) {
+                const pad = n => String(n).padStart(2, '0')
+                return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+            },
+            getDefaultOpenCityTime() {
+                const now = new Date()
+                const minutes = now.getHours() * 60 + now.getMinutes()
+                return minutes >= 18 * 60 + 30 ? '18:30' : '14:30'
+            },
+            getSelectedOpenCityTime() {
+                return this.openCityTimeMode === 'custom' ? String(this.openCityCustomTime || '').trim() : this.openCityTimeMode
+            },
+            buildOpenCityOpenedAt() {
+                const date = String(this.openCityDate || '').trim()
+                const time = this.getSelectedOpenCityTime()
+                return `${date} ${time}:00`
+            },
+            openCity() {
+                this.openCityOperator = ''
+                this.openCityDate = this.formatLocalDateValue(new Date())
+                this.openCityTimeMode = this.getDefaultOpenCityTime()
+                this.openCityCustomTime = ''
+                this.openCityVisible = true
+            },
+            async submitOpenCity() {
+                const operator = String(this.openCityOperator || '').trim()
+                if (!operator) return this.$message.warning('操作员不能为空')
+                if (!this.openCityDate) return this.$message.warning('请选择开城日期')
+                const time = this.getSelectedOpenCityTime()
+                if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return this.$message.warning('请输入有效开城时间')
                 try {
-                    const result = await this.$prompt('请输入本次开城操作员。操作员不是账号权限，只会写入后续业务记录。', '开城', {
-                        confirmButtonText: '开城',
-                        cancelButtonText: '取消',
-                        inputPattern: /\S+/,
-                        inputErrorMessage: '操作员不能为空'
-                    })
-                    await this.write('/api/v1/city/open', {operator: result.value})
+                    await this.write('/api/v1/city/open', {operator, openedAt: this.buildOpenCityOpenedAt()})
+                    this.openCityVisible = false
                     this.$message.success('开城完成')
                 } catch (err) {
-                    if (err !== 'cancel' && err !== 'close') this.$message.error(err.message || err)
+                    this.$message.error(err.message || err)
                 }
             },
             async closeCity() {
