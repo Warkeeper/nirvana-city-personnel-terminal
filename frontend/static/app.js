@@ -737,14 +737,15 @@
             },
             async submitTimeManage() {
                 if (!this.currentRole || !this.currentRole.travelId) return this.$message.warning('该居民暂无进城记录')
-                const addHours = Number(this.timeAddHours)
-                if (!Number.isFinite(addHours) || addHours <= 0) return this.$message.warning('请输入有效的增加时长')
-                const withinHalfHourStep = (addHours * 10) % 5 === 0
-                const withinRecommendedRange = addHours >= 0.5 && addHours <= 10
+                const adjustHours = Number(this.timeAddHours)
+                if (!Number.isFinite(adjustHours) || adjustHours === 0) return this.$message.warning('请输入有效的调整时长')
+                const absHours = Math.abs(adjustHours)
+                const withinHalfHourStep = (absHours * 10) % 5 === 0
+                const withinRecommendedRange = absHours >= 0.5 && absHours <= 10
                 if (!withinHalfHourStep || !withinRecommendedRange) {
                     const reasons = []
                     if (!withinHalfHourStep) reasons.push('时长需为 0.5 小时的倍数')
-                    if (!withinRecommendedRange) reasons.push('建议范围为 0.5 ~ 10 小时')
+                    if (!withinRecommendedRange) reasons.push('建议单次调整范围为 -10 ~ -0.5 或 0.5 ~ 10 小时')
                     try {
                         await this.$confirm(`${reasons.join('，')}。是否确认继续？`, '超出默认范围确认', {confirmButtonText: '继续操作', cancelButtonText: '取消', type: 'warning', distinguishCancelAndClose: true})
                     } catch (err) {
@@ -752,9 +753,9 @@
                     }
                 }
                 try {
-                    await this.write('/api/v1/travel/extensions', {travelId: this.currentRole.travelId, hours: addHours})
+                    await this.write('/api/v1/travel/extensions', {travelId: this.currentRole.travelId, hours: adjustHours})
                     this.timeVisible = false
-                    this.$message.success('进城时长已增加')
+                    this.$message.success('进城时长已调整')
                 } catch (err) {
                     this.$message.error(err.message)
                 }

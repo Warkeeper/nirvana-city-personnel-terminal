@@ -38,7 +38,7 @@ build/
 /ncpt
 /ncpt.exe
 /data
-
+.tmp*
 ### VS Code ###
 .vscode/
 

@@ -1548,14 +1548,14 @@
         <div class="summary-row"><strong>离城时间：</strong>{{ formatDateTime(currentRole?.leaveTime) }}</div>
 
         <el-form label-position="top" style="margin-top:14px;">
-            <el-form-item label="增加时长（小时）">
+            <el-form-item label="调整时长（小时）">
                 <el-input-number v-model="timeAddHours" :step="0.5" :precision="1"></el-input-number>
             </el-form-item>
         </el-form>
 
         <span slot="footer" class="dialog-footer">
             <el-button @click="timeVisible=false">取 消</el-button>
-            <el-button type="primary" @click="submitTimeManage">确 认 增 加</el-button>
+            <el-button type="primary" @click="submitTimeManage">确 认 调 整</el-button>
         </span>
     </el-dialog>
 

@@ -131,7 +131,7 @@ func validateMergeWorkbook(book *XLSXWorkbook) error {
 		"金条流水":     {"时间", "编号", "姓名", "当前身份", "类型", "数量", "操作后余额", "备注", "状态", "操作员"},
 		"玩家进出城记录":  {"开城时间", "姓名", "编号", "当前身份", "进城时间", "离城时间", "时长增加记录", "操作员"},
 		"身份历史":     {"时间", "编号", "姓名快照", "身份", "状态"},
-		"时长增加记录":   {"进出城记录ID", "编号", "姓名", "增加分钟", "操作时间", "操作员"},
+		"时长增加记录":   {"开城时间", "编号", "姓名", "增加分钟", "操作时间", "操作员"},
 		"开城记录":     {"开城时间", "关城时间", "操作员", "备注"},
 		"已取消进出城记录": {"开城时间", "姓名", "编号", "当前身份", "进城时间", "离城时间", "取消时间", "操作员"},
 	}
@@ -449,6 +449,10 @@ func (s *Store) mergeExtensionSheet(ctx context.Context, tx *sql.Tx, sheet *XLSX
 		if err := requireResidentExists(ctx, tx, sheet.Name, row.Index, code); err != nil {
 			return err
 		}
+		sessionOpenedAt, err := parseMergeTime(s, sheet.Name, row, "开城时间", true)
+		if err != nil {
+			return err
+		}
 		occurredAt, err := parseMergeTime(s, sheet.Name, row, "操作时间", true)
 		if err != nil {
 			return err
@@ -457,12 +461,12 @@ func (s *Store) mergeExtensionSheet(ctx context.Context, tx *sql.Tx, sheet *XLSX
 		if err != nil {
 			return err
 		}
-		if minutes <= 0 || minutes > int64(math.MaxInt32) {
-			return mergeCellError(sheet.Name, row.Index, "增加分钟", "必须是正整数")
+		if minutes == 0 || minutes > int64(math.MaxInt32) || minutes < -int64(math.MaxInt32)-1 {
+			return mergeCellError(sheet.Name, row.Index, "增加分钟", "必须是非零整数")
 		}
-		travelID, err := findTravelForExtension(ctx, tx, s.loc, code, occurredAt)
+		travelID, err := findTravelForExtension(ctx, tx, s.loc, sessionOpenedAt, code, occurredAt)
 		if err != nil {
-			return mergeCellError(sheet.Name, row.Index, "进出城记录ID", err.Error())
+			return mergeCellError(sheet.Name, row.Index, "开城时间", err.Error())
 		}
 		inserted, err := mergeTravelExtensionWithResult(ctx, tx, travelID, occurredAt, int(minutes), textCell(row, "操作员"))
 		if err != nil {
@@ -493,12 +497,12 @@ func mergeTravelExtensionWithResult(ctx context.Context, tx *sql.Tx, travelID in
 	return false, err
 }
 
-func findTravelForExtension(ctx context.Context, tx *sql.Tx, loc *time.Location, code string, occurredAt string) (int64, error) {
+func findTravelForExtension(ctx context.Context, tx *sql.Tx, loc *time.Location, sessionOpenedAt string, code string, occurredAt string) (int64, error) {
 	occurred, err := parseDBTime(occurredAt, loc)
 	if err != nil {
 		return 0, err
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT id, enter_at, leave_at FROM travel_records WHERE resident_code = ? AND canceled_at IS NULL", code)
+	rows, err := tx.QueryContext(ctx, "SELECT id, enter_at, leave_at FROM travel_records WHERE session_opened_at = ? AND resident_code = ? AND canceled_at IS NULL", sessionOpenedAt, code)
 	if err != nil {
 		return 0, err
 	}
@@ -526,10 +530,10 @@ func findTravelForExtension(ctx context.Context, tx *sql.Tx, loc *time.Location,
 		return 0, err
 	}
 	if len(matches) == 0 {
-		return 0, fmt.Errorf("找不到编号 %s 在操作时间内的进出城记录", code)
+		return 0, fmt.Errorf("找不到编号 %s 在指定开城时间和操作时间内的进出城记录", code)
 	}
 	if len(matches) > 1 {
-		return 0, fmt.Errorf("编号 %s 在操作时间内匹配到多条进出城记录", code)
+		return 0, fmt.Errorf("编号 %s 在指定开城时间和操作时间内匹配到多条进出城记录", code)
 	}
 	return matches[0], nil
 }
@@ -644,14 +648,15 @@ func parseInlineExtension(s *Store, sheet string, rowIndex int, raw string) (str
 	if raw == "" {
 		return "", 0, mergeCellError(sheet, rowIndex, "时长增加记录", "存在空记录")
 	}
-	plus := strings.LastIndex(raw, "+")
-	if plus < 0 {
+	trimmed := strings.TrimSpace(strings.TrimSuffix(raw, "分钟"))
+	split := strings.LastIndexAny(trimmed, " \t")
+	if split < 0 {
 		return "", 0, mergeCellError(sheet, rowIndex, "时长增加记录", fmt.Sprintf("无法解析 %q", raw))
 	}
-	timeText := strings.TrimSpace(raw[:plus])
-	minuteText := strings.TrimSpace(strings.TrimSuffix(raw[plus+1:], "分钟"))
+	timeText := strings.TrimSpace(trimmed[:split])
+	minuteText := strings.TrimSpace(trimmed[split+1:])
 	minutes64, err := strconv.ParseInt(minuteText, 10, 32)
-	if err != nil || minutes64 <= 0 {
+	if err != nil || minutes64 == 0 {
 		return "", 0, mergeCellError(sheet, rowIndex, "时长增加记录", fmt.Sprintf("无法解析分钟数 %q", raw))
 	}
 	t, err := parseDBTime(timeText, s.loc)

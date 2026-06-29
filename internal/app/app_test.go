@@ -260,6 +260,60 @@ func TestEnterPlayerTimeUsesCurrentOpenCityDate(t *testing.T) {
 	}
 }
 
+func TestExtendTravelAllowsNegativeAdjustmentWithMinimumStay(t *testing.T) {
+	env := newTestEnv(t)
+	env.openCity(t, "time-op")
+	state := env.enterPlayer(t, "enter-time-adjust", "T-001", "时长居民", 0)
+	role := findPlayer(t, state, "T-001")
+
+	env.now = env.now.Add(10 * time.Minute)
+	status := env.writeJSON(t, http.MethodPost, "/api/v1/travel/extensions", map[string]any{"travelId": role.TravelID, "hours": 1.0}, "extend-positive", &state)
+	if status != http.StatusOK {
+		t.Fatalf("positive extend status=%d", status)
+	}
+	role = findPlayer(t, state, "T-001")
+	if got := role.StayHours; got != 3 {
+		t.Fatalf("stay hours after positive adjust = %v, want 3", got)
+	}
+	if got := env.store.formatDisplayTime(role.LeaveTime); got != "2026/6/18 17:30:00" {
+		t.Fatalf("leave time after positive adjust = %q", got)
+	}
+
+	env.now = env.now.Add(10 * time.Minute)
+	status = env.writeJSON(t, http.MethodPost, "/api/v1/travel/extensions", map[string]any{"travelId": role.TravelID, "hours": -1.5}, "extend-negative", &state)
+	if status != http.StatusOK {
+		t.Fatalf("negative adjust status=%d", status)
+	}
+	role = findPlayer(t, state, "T-001")
+	if got := role.StayHours; got != 1.5 {
+		t.Fatalf("stay hours after negative adjust = %v, want 1.5", got)
+	}
+	if got := env.store.formatDisplayTime(role.LeaveTime); got != "2026/6/18 16:00:00" {
+		t.Fatalf("leave time after negative adjust = %q", got)
+	}
+	if len(role.TimeIncreaseLog) < 2 || role.TimeIncreaseLog[0].Minutes != -90 || role.TimeIncreaseLog[1].Minutes != 60 {
+		t.Fatalf("time adjustment logs = %#v", role.TimeIncreaseLog)
+	}
+
+	var errBody map[string]any
+	status = env.writeJSON(t, http.MethodPost, "/api/v1/travel/extensions", map[string]any{"travelId": role.TravelID, "hours": -1.25}, "extend-too-short", &errBody)
+	if status != http.StatusBadRequest {
+		t.Fatalf("too-short adjust status=%d body=%v", status, errBody)
+	}
+	status = env.writeJSON(t, http.MethodPost, "/api/v1/travel/extensions", map[string]any{"travelId": role.TravelID, "hours": 0}, "extend-zero", &errBody)
+	if status != http.StatusBadRequest {
+		t.Fatalf("zero adjust status=%d body=%v", status, errBody)
+	}
+	current, err := env.store.State(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	role = findPlayer(t, *current, "T-001")
+	if got := role.StayHours; got != 1.5 {
+		t.Fatalf("stay hours changed after rejected adjust = %v, want 1.5", got)
+	}
+}
+
 func TestNewSchemaUsesOpenedAtSessionKey(t *testing.T) {
 	env := newTestEnv(t)
 	assertColumnPresence(t, env.store, "city_sessions", "id", false)
@@ -647,7 +701,12 @@ func TestBackupOpenCityMigrationAndFailure(t *testing.T) {
 func TestExportDTOAndXLSXSheets(t *testing.T) {
 	env := newTestEnv(t)
 	env.openCity(t, "exporter")
-	env.enterPlayer(t, "enter-export", "01234", "导出居民", 1)
+	state := env.enterPlayer(t, "enter-export", "01234", "导出居民", 1)
+	role := findPlayer(t, state, "01234")
+	status := env.writeJSON(t, http.MethodPost, "/api/v1/travel/extensions", map[string]any{"travelId": role.TravelID, "hours": -0.5}, "export-negative-adjust", &state)
+	if status != http.StatusOK {
+		t.Fatalf("negative export adjust status=%d", status)
+	}
 	env.gold(t, "gold-export", "01234", GoldAllocate, 2)
 	exported, err := env.store.ExportData(context.Background())
 	if err != nil {
@@ -665,6 +724,21 @@ func TestExportDTOAndXLSXSheets(t *testing.T) {
 	dbRow := firstRow(t, exported, "数据库")
 	if dbRow["编号"] != "01234" {
 		t.Fatalf("export code lost leading zero: %#v", dbRow)
+	}
+	travelRow := firstRow(t, exported, "玩家进出城记录")
+	if got := travelRow["时长增加记录"]; !strings.Contains(got, "-30分钟") {
+		t.Fatalf("travel extension display = %q", got)
+	}
+	extensionSheet := sheetByName(exported, "时长增加记录")
+	if got := extensionSheet.Columns[0]; got != "开城时间" {
+		t.Fatalf("extension first column = %q", got)
+	}
+	extensionRow := firstRow(t, exported, "时长增加记录")
+	if got := extensionRow["开城时间"]; got != "2026/6/18 15:00:00" {
+		t.Fatalf("extension open city time = %q", got)
+	}
+	if got := extensionRow["增加分钟"]; got != "-30" {
+		t.Fatalf("extension minutes = %q", got)
 	}
 	xlsx, err := XLSXBytes(exported)
 	if err != nil {

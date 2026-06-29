@@ -46,6 +46,22 @@ func TestMergeRejectsLegacyOpenCityIDColumns(t *testing.T) {
 	}
 	assertRowCount(t, store, "residents", 0)
 }
+func TestMergeRejectsLegacyExtensionTravelIDColumn(t *testing.T) {
+	store := newMergeStore(t)
+	data := mergeFixture(mergeFixtureOptions{})
+	sheetByName(data, "时长增加记录").Columns[0] = "进出城记录ID"
+	path := writeMergeWorkbook(t, data)
+
+	_, err := store.MergeWorkbook(context.Background(), path)
+	if err == nil {
+		t.Fatal("expected legacy extension travel id column to be rejected")
+	}
+	if !strings.Contains(err.Error(), "开城时间") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertRowCount(t, store, "residents", 0)
+}
+
 func TestMergeWorkbookImportsUpdatesAndAvoidsDuplicates(t *testing.T) {
 	store := newMergeStore(t)
 	path := writeMergeWorkbook(t, mergeFixture(mergeFixtureOptions{}))
@@ -86,6 +102,54 @@ func TestMergeWorkbookImportsUpdatesAndAvoidsDuplicates(t *testing.T) {
 	assertResident(t, store, "01234", "零号改名", KindPlayer, -11, "城防部", "初始备注")
 	assertGoldRecord(t, store, "01234", "流水快照改", -9, "Excel 覆盖备注", true, true)
 	assertSessionNote(t, store, "2026-06-18T09:00:00+08:00", "merge-op", "Excel 覆盖开城备注")
+}
+
+func TestMergeWorkbookImportsNegativeTravelExtensions(t *testing.T) {
+	store := newMergeStore(t)
+	data := mergeFixture(mergeFixtureOptions{})
+	sheetByName(data, "玩家进出城记录").Rows[0]["时长增加记录"] = "2026/6/18 11:00:00 -30分钟"
+	sheetByName(data, "时长增加记录").Rows[0]["增加分钟"] = "-30"
+	path := writeMergeWorkbook(t, data)
+
+	if _, err := store.MergeWorkbook(context.Background(), path); err != nil {
+		t.Fatal(err)
+	}
+	var minutes int
+	if err := store.db.QueryRowContext(context.Background(), "SELECT added_minutes FROM travel_extensions").Scan(&minutes); err != nil {
+		t.Fatal(err)
+	}
+	if minutes != -30 {
+		t.Fatalf("merged extension minutes=%d want -30", minutes)
+	}
+}
+
+func TestMergeRejectsZeroTravelExtensionMinutes(t *testing.T) {
+	cases := []struct {
+		name          string
+		inlineMinutes string
+		sheetMinutes  string
+	}{
+		{name: "inline", inlineMinutes: "2026/6/18 11:00:00 0分钟"},
+		{name: "sheet", sheetMinutes: "0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newMergeStore(t)
+			data := mergeFixture(mergeFixtureOptions{})
+			sheetByName(data, "玩家进出城记录").Rows[0]["时长增加记录"] = tc.inlineMinutes
+			if tc.sheetMinutes == "" {
+				sheetByName(data, "时长增加记录").Rows = nil
+			} else {
+				sheetByName(data, "时长增加记录").Rows[0]["增加分钟"] = tc.sheetMinutes
+			}
+			path := writeMergeWorkbook(t, data)
+
+			if _, err := store.MergeWorkbook(context.Background(), path); err == nil {
+				t.Fatal("merge accepted zero extension minutes")
+			}
+			assertMergeCounts(t, store, 0, 0, 0, 0, 0)
+		})
+	}
 }
 
 func TestMergeRejectsNumericResidentCodeAndRollsBack(t *testing.T) {
@@ -202,7 +266,7 @@ func mergeFixture(opts mergeFixtureOptions) *ExportData {
 		"时间": "2026/6/18 10:05:00", "编号": "01234", "姓名快照": "旧名", "身份": "城防部", "状态": "有效",
 	}}
 	sheetByName(data, "时长增加记录").Rows = []map[string]string{{
-		"进出城记录ID": "200", "编号": "01234", "姓名": opts.residentName, "增加分钟": "30", "操作时间": "2026/6/18 11:00:00", "操作员": "merge-op",
+		"开城时间": "2026/6/18 09:00:00", "编号": "01234", "姓名": opts.residentName, "增加分钟": "30", "操作时间": "2026/6/18 11:00:00", "操作员": "merge-op",
 	}}
 	sheetByName(data, "开城记录").Rows = []map[string]string{{
 		"开城时间": "2026/6/18 09:00:00", "关城时间": "2026/6/18 18:00:00", "操作员": "merge-op", "备注": opts.sessionNote,
@@ -220,7 +284,7 @@ func mergeWorkbookWithResidentRows(rows []map[string]string) *ExportData {
 		{Name: "金条流水", Columns: []string{"时间", "编号", "姓名", "当前身份", "类型", "数量", "操作后余额", "备注", "状态", "操作员"}, Rows: []map[string]string{}},
 		{Name: "玩家进出城记录", Columns: []string{"开城时间", "姓名", "编号", "当前身份", "进城时间", "离城时间", "时长增加记录", "操作员"}, Rows: []map[string]string{}},
 		{Name: "身份历史", Columns: []string{"时间", "编号", "姓名快照", "身份", "状态"}, Rows: []map[string]string{}},
-		{Name: "时长增加记录", Columns: []string{"进出城记录ID", "编号", "姓名", "增加分钟", "操作时间", "操作员"}, Rows: []map[string]string{}},
+		{Name: "时长增加记录", Columns: []string{"开城时间", "编号", "姓名", "增加分钟", "操作时间", "操作员"}, Rows: []map[string]string{}},
 		{Name: "开城记录", Columns: []string{"开城时间", "关城时间", "操作员", "备注"}, Rows: []map[string]string{}},
 		{Name: "已取消进出城记录", Columns: []string{"开城时间", "姓名", "编号", "当前身份", "进城时间", "离城时间", "取消时间", "操作员"}, Rows: []map[string]string{}},
 	}}

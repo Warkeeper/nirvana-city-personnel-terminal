@@ -398,14 +398,21 @@ func (s *Store) VoidGoldRecord(ctx context.Context, id int64) (*AppState, error)
 	return s.State(ctx, "")
 }
 
-func (s *Store) ExtendTravel(ctx context.Context, travelID int64, addHours float64) (*AppState, error) {
-	if travelID <= 0 || addHours <= 0 {
-		return nil, fmt.Errorf("%w: travel id and positive hours are required", ErrBadRequest)
+const minimumTravelStayMinutes = 30
+
+func (s *Store) ExtendTravel(ctx context.Context, travelID int64, adjustHours float64) (*AppState, error) {
+	if travelID <= 0 {
+		return nil, fmt.Errorf("%w: travel id is required", ErrBadRequest)
 	}
-	addedMinutes := int(math.Round(addHours * 60))
-	if addedMinutes <= 0 {
-		return nil, fmt.Errorf("%w: added minutes is invalid", ErrBadRequest)
+	if math.IsNaN(adjustHours) || math.IsInf(adjustHours, 0) || adjustHours == 0 {
+		return nil, fmt.Errorf("%w: non-zero hours are required", ErrBadRequest)
 	}
+	roundedMinutes := math.Round(adjustHours * 60)
+	if math.IsNaN(roundedMinutes) || math.IsInf(roundedMinutes, 0) ||
+		roundedMinutes == 0 || roundedMinutes > float64(math.MaxInt32) || roundedMinutes < -float64(math.MaxInt32)-1 {
+		return nil, fmt.Errorf("%w: adjusted minutes are invalid", ErrBadRequest)
+	}
+	addedMinutes := int(roundedMinutes)
 	now := s.nowString()
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
 		session, err := s.currentSessionTx(ctx, tx)
@@ -426,6 +433,9 @@ func (s *Store) ExtendTravel(ctx context.Context, travelID int64, addHours float
 			return err
 		}
 		nextStay := stay + addedMinutes
+		if nextStay < minimumTravelStayMinutes {
+			return fmt.Errorf("%w: stay time cannot be shorter than 0.5 hours", ErrBadRequest)
+		}
 		nextLeave := enterAt.Add(time.Duration(nextStay) * time.Minute).In(s.loc).Format(time.RFC3339)
 		if _, err := tx.ExecContext(ctx, "UPDATE travel_records SET stay_minutes = ?, leave_at = ? WHERE id = ?", nextStay, nextLeave, travelID); err != nil {
 			return err
@@ -433,12 +443,19 @@ func (s *Store) ExtendTravel(ctx context.Context, travelID int64, addHours float
 		if _, err := tx.ExecContext(ctx, "INSERT INTO travel_extensions(travel_id, added_minutes, occurred_at, operator) VALUES(?, ?, ?, ?)", travelID, addedMinutes, now, session.Operator); err != nil {
 			return err
 		}
-		return s.insertAudit(ctx, tx, "travel.extend", fmt.Sprintf("增加时长：%d +%d分钟", travelID, addedMinutes), session.Operator, now)
+		return s.insertAudit(ctx, tx, "travel.extend", fmt.Sprintf("调整时长：%d %s", travelID, signedMinutesText(addedMinutes)), session.Operator, now)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return s.State(ctx, "")
+}
+
+func signedMinutesText(minutes int) string {
+	if minutes > 0 {
+		return fmt.Sprintf("+%d分钟", minutes)
+	}
+	return fmt.Sprintf("%d分钟", minutes)
 }
 
 func (s *Store) HideTravel(ctx context.Context, travelID int64) (*AppState, error) {

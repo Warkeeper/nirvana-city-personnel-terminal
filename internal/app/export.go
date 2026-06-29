@@ -202,9 +202,9 @@ func (s *Store) identitySheet(ctx context.Context) (Sheet, error) {
 func (s *Store) extensionSheet(ctx context.Context) (Sheet, error) {
 	sheet := Sheet{
 		Name:    "时长增加记录",
-		Columns: []string{"进出城记录ID", "编号", "姓名", "增加分钟", "操作时间", "操作员"},
+		Columns: []string{"开城时间", "编号", "姓名", "增加分钟", "操作时间", "操作员"},
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT e.travel_id, t.resident_code, t.resident_name_snapshot, e.added_minutes, e.occurred_at, e.operator
+	rows, err := s.db.QueryContext(ctx, `SELECT t.session_opened_at, t.resident_code, t.resident_name_snapshot, e.added_minutes, e.occurred_at, e.operator
 		FROM travel_extensions e
 		JOIN travel_records t ON t.id = e.travel_id
 		ORDER BY e.occurred_at ASC, e.id ASC`)
@@ -213,19 +213,18 @@ func (s *Store) extensionSheet(ctx context.Context) (Sheet, error) {
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var travelID int64
-		var code, name, occurred, operator string
+		var sessionOpenedAt, code, name, occurred, operator string
 		var minutes int
-		if err := rows.Scan(&travelID, &code, &name, &minutes, &occurred, &operator); err != nil {
+		if err := rows.Scan(&sessionOpenedAt, &code, &name, &minutes, &occurred, &operator); err != nil {
 			return sheet, err
 		}
 		sheet.Rows = append(sheet.Rows, map[string]string{
-			"进出城记录ID": strconv.FormatInt(travelID, 10),
-			"编号":      code,
-			"姓名":      name,
-			"增加分钟":    strconv.Itoa(minutes),
-			"操作时间":    s.formatDisplayTime(occurred),
-			"操作员":     operator,
+			"开城时间": s.formatDisplayTime(sessionOpenedAt),
+			"编号":   code,
+			"姓名":   name,
+			"增加分钟": strconv.Itoa(minutes),
+			"操作时间": s.formatDisplayTime(occurred),
+			"操作员":  operator,
 		})
 	}
 	return sheet, rows.Err()
@@ -274,7 +273,7 @@ func (s *Store) extensionDisplay(ctx context.Context, travelID int64) ([]string,
 		if err := rows.Scan(&minutes, &occurred); err != nil {
 			return nil, err
 		}
-		out = append(out, fmt.Sprintf("%s +%d分钟", s.formatDisplayTime(occurred), minutes))
+		out = append(out, fmt.Sprintf("%s %s", s.formatDisplayTime(occurred), signedMinutesText(minutes)))
 	}
 	return out, rows.Err()
 }
