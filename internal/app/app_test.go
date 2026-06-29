@@ -184,6 +184,13 @@ func TestResidentCodeOpaqueAndGlobalUnique(t *testing.T) {
 	}
 	var errBody map[string]any
 	status = env.writeJSON(t, http.MethodPost, "/api/v1/residents/npc", map[string]any{
+		"code": " 1234 ", "name": "duplicate", "identity": "guard", "balance": 2, "visible": true,
+	}, "npc-1234-duplicate", &errBody)
+	if status != http.StatusConflict {
+		t.Fatalf("expected duplicate npc code conflict, got %d body=%v", status, errBody)
+	}
+
+	status = env.writeJSON(t, http.MethodPost, "/api/v1/residents/npc", map[string]any{
 		"code": "01234", "name": "冲突", "identity": "保安部正式员工", "balance": 1, "visible": true,
 	}, "npc-conflict", &errBody)
 	if status != http.StatusConflict {
@@ -211,6 +218,150 @@ func TestResidentCodeOpaqueAndGlobalUnique(t *testing.T) {
 	}
 }
 
+func TestNPCPanelConfigurationWorksWithoutOpenCity(t *testing.T) {
+	env := newTestEnv(t)
+
+	var state AppState
+	status := env.writeJSON(t, http.MethodPost, "/api/v1/residents/npc", map[string]any{
+		"code": " 01234 ", "name": "常驻零号", "identity": "保安部正式员工", "balance": 7, "visible": true,
+	}, "npc-config-add", &state)
+	if status != http.StatusOK {
+		t.Fatalf("add npc without open city status=%d", status)
+	}
+	if state.Session.CurrentSession != nil {
+		t.Fatalf("npc config opened a city session: %#v", state.Session.CurrentSession)
+	}
+	npc := findNPC(t, state, "01234")
+	if npc.Code != "01234" || npc.Name != "常驻零号" {
+		t.Fatalf("configured npc = %#v", npc)
+	}
+
+	matches := env.searchResidents(t, KindNPC, "01234", "", 5)
+	if len(matches) != 1 || matches[0].Code != "01234" {
+		t.Fatalf("npc exact search for 01234 = %#v", matches)
+	}
+	matches = env.searchResidents(t, KindNPC, "1234", "", 5)
+	if len(matches) != 0 {
+		t.Fatalf("npc exact search matched 1234 against 01234: %#v", matches)
+	}
+
+	status = env.writeJSON(t, http.MethodPost, "/api/v1/npc/panel", map[string]any{"code": " 01234 ", "visible": false}, "npc-config-hide", &state)
+	if status != http.StatusOK {
+		t.Fatalf("hide npc without open city status=%d", status)
+	}
+	if hasNPC(state, "01234") {
+		t.Fatalf("hidden npc still visible in returned state: %#v", state.Session.Roles)
+	}
+
+	var boot AppState
+	env.getJSON(t, "/api/v1/bootstrap", &boot)
+	if hasNPC(boot, "01234") {
+		t.Fatalf("hidden npc still visible after bootstrap: %#v", boot.Session.Roles)
+	}
+
+	status = env.writeJSON(t, http.MethodPost, "/api/v1/npc/panel", map[string]any{"code": "01234", "visible": true}, "npc-config-show", &state)
+	if status != http.StatusOK {
+		t.Fatalf("show npc without open city status=%d", status)
+	}
+	findNPC(t, state, "01234")
+}
+
+func TestResidentMaintenanceWorksWithoutOpenCity(t *testing.T) {
+	env := newTestEnv(t)
+	env.openCity(t, "op")
+	env.enterPlayer(t, "enter-maintenance", "01234", "旧名", 10)
+	env.closeCity(t, "close-before-maintenance")
+
+	matches := env.searchResidents(t, "", "01234", "", 5)
+	if len(matches) != 1 || matches[0].Code != "01234" {
+		t.Fatalf("closed resident exact search = %#v", matches)
+	}
+
+	state := env.gold(t, "offline-gold", "01234", GoldIn, 5)
+	if state.Session.CurrentSession != nil {
+		t.Fatalf("offline gold opened a city session: %#v", state.Session.CurrentSession)
+	}
+	if len(state.Session.Records) != 0 {
+		t.Fatalf("offline state should not show session records: %#v", state.Session.Records)
+	}
+	matches = env.searchResidents(t, "", "01234", "", 5)
+	if len(matches) != 1 || matches[0].Balance != 15 {
+		t.Fatalf("offline gold did not update searchable balance: %#v", matches)
+	}
+
+	status := env.writeJSON(t, http.MethodPost, "/api/v1/identity", map[string]any{"code": "01234", "identity": "保安部正式员工"}, "offline-identity", &state)
+	if status != http.StatusOK {
+		t.Fatalf("offline identity status=%d", status)
+	}
+	matches = env.searchResidents(t, "", "01234", "", 5)
+	if len(matches) != 1 || matches[0].IdentityCurrent != "保安部正式员工" || len(matches[0].IdentityHistory) == 0 {
+		t.Fatalf("offline identity not searchable with history: %#v", matches)
+	}
+
+	status = env.writeJSON(t, http.MethodPatch, "/api/v1/residents/01234/profile", map[string]any{"code": " 001234 ", "name": "新名", "remark": "手工维护"}, "offline-profile", &state)
+	if status != http.StatusOK {
+		t.Fatalf("offline profile status=%d", status)
+	}
+	matches = env.searchResidents(t, "", "01234", "", 5)
+	if len(matches) != 0 {
+		t.Fatalf("old code still matched after renumber: %#v", matches)
+	}
+	matches = env.searchResidents(t, "", "1234", "", 5)
+	if len(matches) != 0 {
+		t.Fatalf("exact search treated 001234 as 1234: %#v", matches)
+	}
+	matches = env.searchResidents(t, "", "001234", "", 5)
+	if len(matches) != 1 {
+		t.Fatalf("new code search = %#v", matches)
+	}
+	updated := matches[0]
+	if updated.Code != "001234" || updated.Name != "新名" || updated.Balance != 15 {
+		t.Fatalf("updated resident = %#v", updated)
+	}
+	if !strings.Contains(updated.Remark, "手工维护") || !strings.Contains(updated.Remark, "原姓名：旧名") || !strings.Contains(updated.Remark, "原编号：01234") {
+		t.Fatalf("profile remark missing history notes: %q", updated.Remark)
+	}
+
+	status = env.writeJSON(t, http.MethodPost, "/api/v1/residents/npc", map[string]any{"code": "999", "name": "冲突编号", "identity": "保安部正式员工", "balance": 0, "visible": true}, "maintenance-conflict-seed", &state)
+	if status != http.StatusOK {
+		t.Fatalf("seed conflict resident status=%d", status)
+	}
+	var errBody map[string]any
+	status = env.writeJSON(t, http.MethodPatch, "/api/v1/residents/001234/profile", map[string]any{"code": "999", "name": "新名", "remark": "手工维护"}, "maintenance-conflict", &errBody)
+	if status != http.StatusConflict {
+		t.Fatalf("renumber conflict status=%d body=%v", status, errBody)
+	}
+
+	exported, err := env.store.ExportData(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbRow := findRow(t, exported, "数据库", "编号", "001234")
+	if dbRow["编号"] != "001234" || dbRow["姓名"] != "新名" {
+		t.Fatalf("database export row = %#v", dbRow)
+	}
+	goldRow := firstRow(t, exported, "金条流水")
+	if goldRow["编号"] != "001234" || goldRow["姓名"] != "旧名" || goldRow["操作员"] != "" {
+		t.Fatalf("gold export row = %#v", goldRow)
+	}
+	identityRows := sheetRows(t, exported, "身份历史")
+	foundIdentity := false
+	for _, row := range identityRows {
+		if row["编号"] == "001234" && row["身份"] == "保安部正式员工" {
+			foundIdentity = true
+		}
+		if row["编号"] == "01234" {
+			t.Fatalf("identity history kept old code after renumber: %#v", identityRows)
+		}
+	}
+	if !foundIdentity {
+		t.Fatalf("identity export missing new-code identity: %#v", identityRows)
+	}
+	travelRow := firstRow(t, exported, "玩家进出城记录")
+	if travelRow["编号"] != "001234" {
+		t.Fatalf("travel export row kept old code: %#v", travelRow)
+	}
+}
 func TestOpenCityDoesNotClearHistoryAndTracksOperator(t *testing.T) {
 	env := newTestEnv(t)
 	env.openCity(t, "old-op")
@@ -759,6 +910,26 @@ func TestExportDTOAndXLSXSheets(t *testing.T) {
 	}
 }
 
+func findNPC(t *testing.T, state AppState, code string) RoleDTO {
+	t.Helper()
+	for _, role := range state.Session.Roles {
+		if role.Type == KindNPC && role.Code == code {
+			return role
+		}
+	}
+	t.Fatalf("npc %s not found in roles %#v", code, state.Session.Roles)
+	return RoleDTO{}
+}
+
+func hasNPC(state AppState, code string) bool {
+	for _, role := range state.Session.Roles {
+		if role.Type == KindNPC && role.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 func findPlayer(t *testing.T, state AppState, code string) RoleDTO {
 	t.Helper()
 	for _, role := range state.Session.Roles {
@@ -781,6 +952,16 @@ func findRecordID(t *testing.T, state AppState, typ string) int64 {
 	return 0
 }
 
+func findRow(t *testing.T, data *ExportData, sheet, column, value string) map[string]string {
+	t.Helper()
+	for _, row := range sheetRows(t, data, sheet) {
+		if row[column] == value {
+			return row
+		}
+	}
+	t.Fatalf("sheet %s has no row with %s=%s", sheet, column, value)
+	return nil
+}
 func firstRow(t *testing.T, data *ExportData, sheet string) map[string]string {
 	t.Helper()
 	rows := sheetRows(t, data, sheet)

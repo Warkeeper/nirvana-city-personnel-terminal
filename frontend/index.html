@@ -254,6 +254,111 @@
             line-height: 1.5;
         }
 
+
+        .npc-config-section {
+            margin-bottom: 14px;
+        }
+
+        .npc-config-heading {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 8px;
+            color: #303133;
+            font-weight: 600;
+        }
+
+        .npc-config-count {
+            color: #909399;
+            font-size: 12px;
+            font-weight: 400;
+            white-space: nowrap;
+        }
+
+        .npc-config-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-height: 220px;
+            overflow: auto;
+            padding-right: 2px;
+        }
+
+        .npc-config-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 8px 10px;
+            border: 1px solid #ebeef5;
+            border-radius: 6px;
+            background: #fafafa;
+        }
+
+        .npc-config-main {
+            display: flex;
+            flex: 1;
+            min-width: 0;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .npc-config-name {
+            overflow: hidden;
+            color: #303133;
+            font-weight: 600;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .npc-config-meta {
+            overflow: hidden;
+            color: #606266;
+            font-size: 12px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .npc-config-search {
+            display: flex;
+            gap: 10px;
+        }
+
+        .npc-config-search .el-input {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .resident-maintenance-search {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .resident-maintenance-selected {
+            margin-top: 14px;
+            padding: 12px;
+            border: 1px solid #ebeef5;
+            border-radius: 8px;
+            background: #fafafa;
+        }
+
+        .resident-maintenance-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .resident-maintenance-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+
         @media (max-width: 768px) {
             .role-section-header {
                 align-items: stretch;
@@ -285,6 +390,30 @@
                 width: 100%;
                 max-width: 100%;
             }
+
+            .npc-config-search {
+                flex-wrap: wrap;
+            }
+
+            .npc-config-search .el-button {
+                width: 100%;
+            }
+
+            .resident-maintenance-search {
+                flex-wrap: wrap;
+            }
+
+            .resident-maintenance-search .el-button {
+                width: 100%;
+            }
+
+            .resident-maintenance-header {
+                flex-wrap: wrap;
+            }
+
+            .npc-config-row {
+                align-items: flex-start;
+            }
         }
 
         @media (max-width: 480px) {
@@ -302,6 +431,14 @@
 
             .npc-group-members {
                 grid-template-columns: 1fr;
+            }
+
+            .npc-config-row {
+                flex-direction: column;
+            }
+
+            .npc-config-row .el-button {
+                width: 100%;
             }
         }
 
@@ -954,6 +1091,8 @@
             <el-button size="small" type="danger" @click="closeCity">
                 🛑 闭城
             </el-button>
+            <el-button size="small" type="info" @click="openNpcConfig">常驻配置</el-button>
+            <el-button size="small" type="info" @click="openResidentMaintenance">居民维护</el-button>
             <el-button size="small" type="primary" @click="exportCurrentData">⬇ 导出当前数据</el-button>
             <el-button size="small" type="success" @click="openCloudSync">云端上传</el-button>
         </div>
@@ -1017,10 +1156,66 @@
         </span>
     </el-dialog>
 
+    <el-dialog
+            title="居民维护"
+            :visible.sync="maintenanceVisible"
+            width="760px"
+            custom-class="resident-maintenance-dialog"
+            :close-on-click-modal="false"
+            @closed="resetMaintenanceDialog"
+    >
+        <div class="resident-maintenance-search">
+            <el-input
+                    v-model.trim="maintenanceQuery"
+                    clearable
+                    placeholder="输入编号或姓名"
+                    @keyup.enter.native="searchMaintenanceResidents"
+                    @clear="resetMaintenanceSearch"
+            ></el-input>
+            <el-button type="primary" icon="el-icon-search" @click="searchMaintenanceResidents">搜索</el-button>
+        </div>
+
+        <div v-if="maintenanceSearchPerformed && maintenanceResults.length" class="npc-config-list">
+            <div
+                    v-for="candidate in maintenanceResults"
+                    :key="candidate._candidateKey"
+                    class="npc-config-row"
+            >
+                <div class="npc-config-main">
+                    <span class="npc-config-name">{{ displayResidentName(candidate.name) }} #{{ candidate.code }}</span>
+                    <span class="npc-config-meta">{{ residentKindLabel(candidate) }} / {{ candidate.identityCurrent || '未设置' }} / 金条 {{ candidate.balance }}</span>
+                </div>
+                <el-button size="mini" type="primary" plain @click="selectMaintenanceResident(candidate)">选择</el-button>
+            </div>
+        </div>
+        <div v-else-if="maintenanceSearchPerformed" class="warning-text" style="color:#606266;">
+            未找到匹配的居民。
+        </div>
+
+        <div v-if="maintenanceSelectedRole" class="resident-maintenance-selected">
+            <div class="resident-maintenance-header">
+                <div class="npc-config-main">
+                    <span class="npc-config-name">{{ displayResidentName(maintenanceSelectedRole.name) }} #{{ maintenanceSelectedRole.code }}</span>
+                    <span class="npc-config-meta">{{ residentKindLabel(maintenanceSelectedRole) }} / {{ maintenanceSelectedRole.identityCurrent || '未设置' }} / 金条 {{ maintenanceSelectedRole.balance }}</span>
+                    <span v-if="maintenanceSelectedRole.remark" class="npc-config-meta">备注：{{ maintenanceSelectedRole.remark }}</span>
+                </div>
+                <el-tag size="mini" effect="plain">已选择</el-tag>
+            </div>
+            <div class="resident-maintenance-actions">
+                <el-button size="small" type="warning" icon="el-icon-coin" @click="openMaintenanceGold">金条</el-button>
+                <el-button size="small" type="primary" icon="el-icon-postcard" @click="openMaintenanceIdentity">身份</el-button>
+                <el-button size="small" type="info" icon="el-icon-edit" @click="openMaintenanceProfile">姓名 / 编号 / 备注</el-button>
+            </div>
+        </div>
+
+        <span slot="footer">
+            <el-button @click="maintenanceVisible=false">关闭</el-button>
+        </span>
+    </el-dialog>
     <!-- ===== Add role ===== -->
     <div style="margin-bottom:12px">
         <el-button size="small" type="success" @click="openAdd">➕ 添加城邦居民</el-button>
-        <el-button size="small" type="warning" @click="openAddNpc">➕ 添加常驻居民</el-button>
+        <el-button size="small" type="warning" @click="openAddNpc">➕ 新增常驻居民</el-button>
     </div>
 
     <!-- ===== Players ===== -->
@@ -1145,7 +1340,7 @@
                 <el-input v-model="residentProfileName" placeholder="请输入姓名"></el-input>
             </el-form-item>
             <el-form-item label="编号">
-                <el-input :value="residentProfileRole ? residentProfileRole.code : ''" disabled></el-input>
+                <el-input v-model="residentProfileCode" placeholder="请输入编号"></el-input>
             </el-form-item>
             <el-form-item label="备注">
                 <el-input
@@ -1346,19 +1541,19 @@
         </span>
     </el-dialog>
 
-    <!-- ===== 添加常驻居民 ===== -->
-    <el-dialog title="常驻居民登记" :visible.sync="npcAddVisible" width="560px" :close-on-click-modal="false">
+    <!-- ===== 新增常驻居民 ===== -->
+    <el-dialog title="常驻居民登记" :visible.sync="npcAddVisible" width="560px" :close-on-click-modal="false" @closed="resetNpcAddForm">
         <div style="display:flex;gap:10px;">
-            <el-input v-model.trim="npcSearchCode" placeholder="编号"></el-input>
-            <el-input v-model.trim="npcSearchName" placeholder="姓名"></el-input>
-            <el-button type="primary" @click="searchNpc">搜索</el-button>
+            <el-input v-model.trim="npcAddSearchCode" placeholder="编号"></el-input>
+            <el-input v-model.trim="npcAddSearchName" placeholder="姓名"></el-input>
+            <el-button type="primary" @click="searchAddNpc">搜索</el-button>
         </div>
 
-        <div v-if="npcSearchPerformed && npcMatchedCandidates.length" class="npc-search-results">
+        <div v-if="npcAddSearchPerformed && npcAddMatchedCandidates.length" class="npc-search-results">
             <div class="warning-text" style="margin-bottom:6px;color:#606266;">找到以下常驻居民，选择后可添加进面板：</div>
-            <el-radio-group v-model="npcSelectedCode" @change="selectNpcCandidate">
+            <el-radio-group v-model="npcAddSelectedCode" @change="selectAddNpcCandidate">
                 <el-radio
-                        v-for="candidate in npcMatchedCandidates"
+                        v-for="candidate in npcAddMatchedCandidates"
                         :key="candidate._candidateKey"
                         :label="candidate._candidateKey"
                 >
@@ -1366,7 +1561,7 @@
                 </el-radio>
             </el-radio-group>
         </div>
-        <div v-else-if="npcSearchPerformed" class="warning-text" style="margin-top:10px;color:#606266;">
+        <div v-else-if="npcAddSearchPerformed" class="warning-text" style="margin-top:10px;color:#606266;">
             未找到匹配的常驻居民，可在下方填写所属势力后新增。
         </div>
 
@@ -1385,7 +1580,79 @@
 
         <span slot="footer">
             <el-button @click="cancelAddNpc">取消</el-button>
-            <el-button type="primary" @click="addNpcRole">添加常驻居民</el-button>
+            <el-button type="primary" @click="addNpcRole">新增常驻居民</el-button>
+        </span>
+    </el-dialog>
+    <!-- ===== 常驻配置 ===== -->
+    <el-dialog
+            title="常驻配置"
+            :visible.sync="npcConfigVisible"
+            width="680px"
+            :close-on-click-modal="false"
+            @closed="resetNpcConfigSearch"
+    >
+        <div class="npc-config-section">
+            <div class="npc-config-heading">
+                <span>当前显示列表</span>
+                <span class="npc-config-count">{{ npcs.length }} 人</span>
+            </div>
+            <div v-if="!npcs.length" class="warning-text" style="color:#606266;">
+                暂无常驻居民显示，可在下方搜索已有常驻居民后加入。
+            </div>
+            <div v-else class="npc-config-list">
+                <div
+                        v-for="r in npcs"
+                        :key="r.id || `${r.code}-${r.name}`"
+                        class="npc-config-row"
+                >
+                    <div class="npc-config-main">
+                        <span class="npc-config-name">{{ displayResidentName(r.name) }} #{{ r.code }}</span>
+                        <span class="npc-config-meta">{{ r.identityCurrent || '未设置势力' }}</span>
+                    </div>
+                    <el-button size="mini" type="danger" plain @click="removeNpcFromConfig(r)">移出</el-button>
+                </div>
+            </div>
+        </div>
+
+        <div class="npc-config-section">
+            <div class="npc-config-heading">
+                <span>搜索常驻居民</span>
+            </div>
+            <div class="npc-config-search">
+                <el-input v-model.trim="npcSearchCode" placeholder="编号"></el-input>
+                <el-input v-model.trim="npcSearchName" placeholder="姓名"></el-input>
+                <el-button type="primary" @click="searchNpc">搜索</el-button>
+            </div>
+
+            <div v-if="npcSearchPerformed && npcMatchedCandidates.length" class="npc-search-results">
+                <div class="warning-text" style="margin-bottom:6px;color:#606266;">找到以下常驻居民，可加入当前显示列表：</div>
+                <div class="npc-config-list">
+                    <div
+                            v-for="candidate in npcMatchedCandidates"
+                            :key="candidate._candidateKey"
+                            class="npc-config-row"
+                    >
+                        <div class="npc-config-main">
+                            <span class="npc-config-name">{{ displayResidentName(candidate.name) }} #{{ candidate.code }}</span>
+                            <span class="npc-config-meta">{{ candidate.identityCurrent || '未设置势力' }}</span>
+                        </div>
+                        <el-button
+                                size="mini"
+                                type="primary"
+                                plain
+                                :disabled="isNpcInConfig(candidate)"
+                                @click="addNpcToConfig(candidate)"
+                        >{{ isNpcInConfig(candidate) ? '已加入' : '加入' }}</el-button>
+                    </div>
+                </div>
+            </div>
+            <div v-else-if="npcSearchPerformed" class="warning-text" style="margin-top:10px;color:#606266;">
+                未找到匹配的常驻居民。
+            </div>
+        </div>
+
+        <span slot="footer">
+            <el-button @click="cancelNpcConfig">关闭</el-button>
         </span>
     </el-dialog>
     <!-- ===== 操作弹窗 ===== -->

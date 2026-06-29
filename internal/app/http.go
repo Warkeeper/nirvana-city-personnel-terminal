@@ -156,13 +156,14 @@ func (s *Server) handleResidentPath(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var in struct {
+			Code   string `json:"code"`
 			Name   string `json:"name"`
 			Remark string `json:"remark"`
 		}
 		if !decodeJSON(w, r, &in) {
 			return
 		}
-		state, err := s.store.UpdateResident(r.Context(), code, in.Name, in.Remark)
+		state, err := s.store.UpdateResident(r.Context(), code, in.Code, in.Name, in.Remark)
 		respond(w, state, err)
 		return
 	}

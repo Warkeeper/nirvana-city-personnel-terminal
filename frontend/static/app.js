@@ -1,10 +1,4 @@
 (function () {
-    const DEFAULT_VISIBLE_NPC_CODES = [
-        '999306', '999005', '999002', '999003', '999004', '999001',
-        '999006', '999007', '999012', '999010', '999968', '999017',
-        '999018', '999019', '999020', '999021', '999023', '999024', '999025'
-    ]
-
     function createDefaultSession() {
         return {
             roles: [],
@@ -16,7 +10,7 @@
             hiddenNpcKeys: [],
             suppressedTravelResidentCodes: [],
             historicalNpcs: [],
-            visibleNpcCodes: [...DEFAULT_VISIBLE_NPC_CODES],
+            visibleNpcCodes: [],
             currentSession: null
         }
     }
@@ -51,6 +45,12 @@
             summaryVisible: false,
             addVisible: false,
             npcAddVisible: false,
+            npcConfigVisible: false,
+            maintenanceVisible: false,
+            maintenanceQuery: '',
+            maintenanceSearchPerformed: false,
+            maintenanceResults: [],
+            maintenanceSelectedRole: null,
             openCityVisible: false,
             openCityOperator: '',
             openCityDate: '',
@@ -89,13 +89,19 @@
             residentProfileVisible: false,
             residentProfileRole: null,
             residentProfileOriginalName: '',
+            residentProfileOriginalCode: '',
             residentProfileName: '',
+            residentProfileCode: '',
             residentProfileRemark: '',
             npcSearchCode: '',
             npcSearchName: '',
             npcSearchPerformed: false,
             npcMatchedCandidates: [],
-            npcSelectedCode: '',
+            npcAddSearchCode: '',
+            npcAddSearchName: '',
+            npcAddSearchPerformed: false,
+            npcAddMatchedCandidates: [],
+            npcAddSelectedCode: '',
             npcNewName: '',
             npcNewCode: '',
             npcNewIdentity: '',
@@ -218,6 +224,10 @@
                     const next = this.findResidentByCode(this.residentProfileRole.code)
                     if (next) this.residentProfileRole = next
                 }
+                if (this.maintenanceSelectedRole) {
+                    const next = this.findRoleByCode(this.maintenanceSelectedRole.code)
+                    if (next) this.maintenanceSelectedRole = next
+                }
             },
             async refresh() {
                 const data = await this.api('/api/v1/bootstrap')
@@ -334,29 +344,111 @@
             syncPlayerToHistorical() {},
             syncNpcToHistorical() {},
             syncResidentRecordNames() { return 0 },
+            resetMaintenanceSearch() {
+                this.maintenanceQuery = ''
+                this.maintenanceSearchPerformed = false
+                this.maintenanceResults = []
+            },
+            resetMaintenanceDialog() {
+                this.resetMaintenanceSearch()
+                this.maintenanceSelectedRole = null
+            },
+            openResidentMaintenance() {
+                this.resetMaintenanceSearch()
+                this.maintenanceSelectedRole = null
+                this.maintenanceVisible = true
+            },
+            residentKindLabel(role) {
+                return role && role.type === 'npc' ? '常驻居民' : '城邦居民'
+            },
+            async searchMaintenanceResidents() {
+                const query = String(this.maintenanceQuery || '').trim()
+                if (!query) {
+                    this.resetMaintenanceSearch()
+                    return this.$message.warning('请输入编号或姓名后再搜索')
+                }
+                try {
+                    const matches = await this.searchResidents({q: query, limit: 10})
+                    this.maintenanceSearchPerformed = true
+                    this.maintenanceResults = matches.map((role, index) => ({...role, _candidateKey: `${role.code}-${index}`}))
+                    if (!matches.length) return this.$message.warning('未找到匹配的居民')
+                    this.$message.success(`找到 ${matches.length} 位居民`)
+                } catch (err) {
+                    this.$message.error(err.message || err)
+                }
+            },
+            selectMaintenanceResident(role) {
+                if (!role) return
+                this.ensureResidentFields(role)
+                this.maintenanceSelectedRole = this.currentRole
+            },
+            openMaintenanceGold() {
+                if (!this.maintenanceSelectedRole) return this.$message.warning('请先选择居民')
+                this.openGoldManage(this.maintenanceSelectedRole)
+            },
+            openMaintenanceIdentity() {
+                if (!this.maintenanceSelectedRole) return this.$message.warning('请先选择居民')
+                this.openIdentityManage(this.maintenanceSelectedRole)
+            },
+            openMaintenanceProfile() {
+                if (!this.maintenanceSelectedRole) return this.$message.warning('请先选择居民')
+                this.editResidentProfile(this.maintenanceSelectedRole)
+            },
+            syncResidentReferences(role, oldCode = '') {
+                if (!role) return
+                const nextCode = this.normalizeResidentCode(role.code)
+                const previousCode = this.normalizeResidentCode(oldCode)
+                const matches = (target) => {
+                    const code = this.normalizeResidentCode(target && target.code)
+                    return Boolean(code && (code === nextCode || (previousCode && code === previousCode)))
+                }
+                if (matches(this.currentRole)) this.currentRole = role
+                if (matches(this.playerProfileRole)) this.playerProfileRole = role
+                if (matches(this.residentProfileRole)) this.residentProfileRole = role
+                if (matches(this.maintenanceSelectedRole)) this.maintenanceSelectedRole = role
+                this.maintenanceResults = this.maintenanceResults.map(item => matches(item) ? Object.assign({}, role, {_candidateKey: item._candidateKey}) : item)
+            },
+            async refreshMaintenanceSelectedByCode(code, oldCode = '') {
+                const normalized = this.normalizeResidentCode(code)
+                if (!normalized) return
+                if (!this.maintenanceVisible && !this.maintenanceSelectedRole) return
+                const matches = await this.searchResidents({code: normalized, limit: 5})
+                const next = matches.find(role => this.normalizeResidentCode(role.code) === normalized)
+                if (next) this.syncResidentReferences(next, oldCode)
+            },
             resetResidentProfileForm() {
                 this.residentProfileRole = null
                 this.residentProfileOriginalName = ''
+                this.residentProfileOriginalCode = ''
                 this.residentProfileName = ''
+                this.residentProfileCode = ''
                 this.residentProfileRemark = ''
             },
             editResidentProfile(role) {
                 if (!role || (role.type !== 'player' && role.type !== 'npc')) return
                 this.residentProfileRole = role
                 this.residentProfileOriginalName = String(role.name || '').trim()
+                this.residentProfileOriginalCode = this.normalizeResidentCode(role.code)
                 this.residentProfileName = this.residentProfileOriginalName
+                this.residentProfileCode = this.residentProfileOriginalCode
                 this.residentProfileRemark = String(role.remark || '').trim()
                 this.residentProfileVisible = true
             },
             async submitResidentProfile() {
                 const role = this.residentProfileRole
                 if (!role) return
+                const oldCode = this.normalizeResidentCode(role.code)
+                const nextCode = this.normalizeResidentCode(this.residentProfileCode)
                 const nextName = String(this.residentProfileName || '').trim()
                 const nextRemark = String(this.residentProfileRemark || '').trim()
+                if (!nextCode) return this.$message.warning('编号不能为空')
                 if (!nextName) return this.$message.warning('姓名不能为空')
                 if (this.isPlaceholderResidentName(nextName)) return this.$message.warning('请填写真实姓名')
                 try {
-                    await this.write(`/api/v1/residents/${encodeURIComponent(role.code)}/profile`, {name: nextName, remark: nextRemark}, {method: 'PATCH'})
+                    await this.write(`/api/v1/residents/${encodeURIComponent(oldCode)}/profile`, {code: nextCode, name: nextName, remark: nextRemark}, {method: 'PATCH'})
+                    const nextRole = this.findRoleByCode(nextCode)
+                    if (nextRole) this.syncResidentReferences(nextRole, oldCode)
+                    await this.refreshMaintenanceSelectedByCode(nextCode, oldCode)
                     this.residentProfileVisible = false
                     this.$message.success('居民资料已更新')
                 } catch (err) {
@@ -477,51 +569,65 @@
                 this.matchedHistoricalPlayer = null
             },
             resetNpcAddForm() {
-                this.npcSearchCode = ''
-                this.npcSearchName = ''
-                this.npcSearchPerformed = false
-                this.npcMatchedCandidates = []
-                this.npcSelectedCode = ''
+                this.npcAddSearchCode = ''
+                this.npcAddSearchName = ''
+                this.npcAddSearchPerformed = false
+                this.npcAddMatchedCandidates = []
+                this.npcAddSelectedCode = ''
                 this.npcNewName = ''
                 this.npcNewCode = ''
                 this.npcNewIdentity = ''
                 this.npcNewBalance = 0
+            },
+            resetNpcConfigSearch() {
+                this.npcSearchCode = ''
+                this.npcSearchName = ''
+                this.npcSearchPerformed = false
+                this.npcMatchedCandidates = []
+            },
+            openNpcConfig() {
+                this.resetNpcConfigSearch()
+                this.npcConfigVisible = true
             },
             openAddNpc() {
                 if (this.needsImport) return this.$message.warning('请先开城，再执行该操作。')
                 this.resetNpcAddForm()
                 this.npcAddVisible = true
             },
+            cancelNpcConfig() {
+                this.npcConfigVisible = false
+                this.resetNpcConfigSearch()
+            },
             cancelAddNpc() {
                 this.npcAddVisible = false
                 this.resetNpcAddForm()
             },
-            async searchNpc() {
-                const codeQuery = this.normalizeResidentCode(this.npcSearchCode)
-                const nameQuery = String(this.npcSearchName || '').trim()
+            async searchAddNpc() {
+                const codeQuery = this.normalizeResidentCode(this.npcAddSearchCode)
+                const nameQuery = String(this.npcAddSearchName || '').trim()
                 if (!codeQuery && !nameQuery) return this.$message.warning('请输入编号或姓名后再搜索')
                 try {
                     const matches = await this.searchResidents({kind: 'npc', code: codeQuery, name: nameQuery, limit: 5})
-                    this.npcSearchPerformed = true
-                    this.npcMatchedCandidates = matches.map((npc, index) => ({...npc, _candidateKey: `${npc.code}-${index}`}))
-                    this.npcSelectedCode = ''
+                    this.npcAddSearchPerformed = true
+                    this.npcAddMatchedCandidates = matches.map((npc, index) => ({...npc, _candidateKey: `${npc.code}-${index}`}))
+                    this.npcAddSelectedCode = ''
                     if (!matches.length) {
-                        this.npcNewCode = String(this.npcSearchCode || '').trim()
-                        this.npcNewName = String(this.npcSearchName || '').trim()
+                        this.npcNewCode = String(this.npcAddSearchCode || '').trim()
+                        this.npcNewName = String(this.npcAddSearchName || '').trim()
                         this.npcNewIdentity = ''
                         this.npcNewBalance = 0
                         return this.$message.warning('未找到匹配的常驻居民，可手动新增')
                     }
-                    this.selectNpcCandidate(this.npcMatchedCandidates[0]._candidateKey)
+                    this.selectAddNpcCandidate(this.npcAddMatchedCandidates[0]._candidateKey)
                     this.$message.success(`找到 ${matches.length} 位常驻居民`)
                 } catch (err) {
                     this.$message.error(err.message)
                 }
             },
-            selectNpcCandidate(candidateKey) {
-                const candidate = this.npcMatchedCandidates.find(npc => npc._candidateKey === candidateKey)
+            selectAddNpcCandidate(candidateKey) {
+                const candidate = this.npcAddMatchedCandidates.find(npc => npc._candidateKey === candidateKey)
                 if (!candidate) return
-                this.npcSelectedCode = candidate._candidateKey
+                this.npcAddSelectedCode = candidate._candidateKey
                 this.npcNewName = candidate.name || ''
                 this.npcNewCode = candidate.code || ''
                 this.npcNewIdentity = candidate.identityCurrent || ''
@@ -542,6 +648,43 @@
                     this.$message.success('常驻居民已添加到面板')
                 } catch (err) {
                     this.$message.error(err.message)
+                }
+            },
+            async searchNpc() {
+                const codeQuery = this.normalizeResidentCode(this.npcSearchCode)
+                const nameQuery = String(this.npcSearchName || '').trim()
+                if (!codeQuery && !nameQuery) return this.$message.warning('请输入编号或姓名后再搜索')
+                try {
+                    const matches = await this.searchResidents({kind: 'npc', code: codeQuery, name: nameQuery, limit: 10})
+                    this.npcSearchPerformed = true
+                    this.npcMatchedCandidates = matches.map((npc, index) => ({...npc, _candidateKey: `${npc.code}-${index}`}))
+                    if (!matches.length) return this.$message.warning('未找到匹配的常驻居民')
+                    this.$message.success(`找到 ${matches.length} 位常驻居民`)
+                } catch (err) {
+                    this.$message.error(err.message)
+                }
+            },
+            isNpcInConfig(role) {
+                const code = this.normalizeResidentCode(role && role.code)
+                return Boolean(code && this.npcs.some(npc => this.normalizeResidentCode(npc.code) === code))
+            },
+            async addNpcToConfig(role) {
+                const code = this.normalizeResidentCode(role && role.code)
+                if (!code) return
+                try {
+                    await this.write('/api/v1/npc/panel', {code, visible: true})
+                    this.$message.success('已加入常驻显示列表')
+                } catch (err) {
+                    this.$message.error(err.message || err)
+                }
+            },
+            async removeNpcFromConfig(role) {
+                if (!role || !role.code) return
+                try {
+                    await this.write('/api/v1/npc/panel', {code: role.code, visible: false})
+                    this.$message.success('已移出常驻显示列表')
+                } catch (err) {
+                    this.$message.error(err.message || err)
                 }
             },
             getDefaultEnterTime() {
@@ -715,8 +858,10 @@
                 if (this.identityDepartment !== '自由人' && !this.identityStage) return this.$message.warning('请选择状态')
                 if (this.identityDepartment === '其它' && !String(this.identityCustomDepartment || '').trim()) return this.$message.warning('请输入其它身份前缀')
                 const identityText = this.buildIdentity(this.identityDepartment, this.identityStage, this.identityCustomDepartment)
+                const code = this.normalizeResidentCode(this.currentRole && this.currentRole.code)
                 try {
                     await this.write('/api/v1/identity', {code: this.currentRole.code, identity: identityText})
+                    await this.refreshMaintenanceSelectedByCode(code)
                     this.identityVisible = false
                     this.$message.success('身份已更新')
                 } catch (err) {
@@ -770,6 +915,7 @@
                 const type = this.operateType
                 const amount = Number(this.operateAmount || 0)
                 if (!this.currentRole) return
+                const code = this.normalizeResidentCode(this.currentRole.code)
                 if (!Number.isFinite(amount) || amount <= 0) return this.$message.warning('请输入有效数量')
                 try {
                     await this.write('/api/v1/gold/records', {
@@ -780,6 +926,7 @@
                         allocateCategory: this.allocateCategory,
                         allocateReason: this.allocateCustomReason
                     })
+                    await this.refreshMaintenanceSelectedByCode(code)
                     this.operateVisible = false
                     this.$message.success('金条业务已记录')
                 } catch (err) {

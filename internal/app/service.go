@@ -188,6 +188,14 @@ func (s *Store) UpsertNPC(ctx context.Context, in NPCInput) (*AppState, error) {
 		if session != nil {
 			operator = session.Operator
 		}
+		var existing string
+		err := tx.QueryRowContext(ctx, "SELECT code FROM residents WHERE code = ?", in.Code).Scan(&existing)
+		if err == nil {
+			return fmt.Errorf("%w: 居民编号已被占用", ErrConflict)
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		if err := s.ensureResidentTx(ctx, tx, in.Code, in.Name, KindNPC, in.Balance, in.Identity, in.Remark, now); err != nil {
 			return err
 		}
@@ -208,29 +216,78 @@ func (s *Store) UpsertNPC(ctx context.Context, in NPCInput) (*AppState, error) {
 	return s.State(ctx, "")
 }
 
-func (s *Store) UpdateResident(ctx context.Context, code, name, remark string) (*AppState, error) {
-	code = normalizeCode(code)
+func (s *Store) UpdateResident(ctx context.Context, oldCode, newCode, name, remark string) (*AppState, error) {
+	oldCode = normalizeCode(oldCode)
+	newCode = normalizeCode(newCode)
+	if newCode == "" {
+		newCode = oldCode
+	}
 	name = strings.TrimSpace(name)
 	remark = strings.TrimSpace(remark)
-	if code == "" || name == "" {
+	if oldCode == "" || newCode == "" || name == "" {
 		return nil, fmt.Errorf("%w: code and name are required", ErrBadRequest)
 	}
 	now := s.nowString()
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, "UPDATE residents SET name = ?, remark = ?, updated_at = ? WHERE code = ?", name, remark, now, code)
+		var currentName, kind, identity, createdAt string
+		var balance int64
+		err := tx.QueryRowContext(ctx, `SELECT name, kind, balance, identity_current, created_at
+			FROM residents WHERE code = ?`, oldCode).Scan(&currentName, &kind, &balance, &identity, &createdAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
 		if err != nil {
 			return err
 		}
-		affected, _ := res.RowsAffected()
-		if affected == 0 {
-			return ErrNotFound
+		notes := []string{}
+		if currentName != name {
+			notes = append(notes, "原姓名："+currentName)
 		}
-		session, _ := s.currentSessionTx(ctx, tx)
+		if oldCode != newCode {
+			notes = append(notes, "原编号："+oldCode)
+		}
+		finalRemark := appendProfileChangeNotes(remark, notes)
 		operator := ""
-		if session != nil {
+		if session, _ := s.currentSessionTx(ctx, tx); session != nil {
 			operator = session.Operator
 		}
-		return s.insertAudit(ctx, tx, "resident.update", fmt.Sprintf("居民资料更新：%s(%s)", name, code), operator, now)
+		if oldCode == newCode {
+			res, err := tx.ExecContext(ctx, "UPDATE residents SET name = ?, remark = ?, updated_at = ? WHERE code = ?", name, finalRemark, now, oldCode)
+			if err != nil {
+				return err
+			}
+			affected, _ := res.RowsAffected()
+			if affected == 0 {
+				return ErrNotFound
+			}
+			return s.insertAudit(ctx, tx, "resident.update", fmt.Sprintf("居民资料更新：%s(%s)", name, oldCode), operator, now)
+		}
+		var existing string
+		err = tx.QueryRowContext(ctx, "SELECT code FROM residents WHERE code = ?", newCode).Scan(&existing)
+		if err == nil {
+			return fmt.Errorf("%w: resident code already exists", ErrConflict)
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO residents(code, name, kind, balance, identity_current, remark, created_at, updated_at)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, newCode, name, kind, balance, identity, finalRemark, createdAt, now); err != nil {
+			return err
+		}
+		for _, stmt := range []string{
+			"UPDATE identity_history SET resident_code = ? WHERE resident_code = ?",
+			"UPDATE gold_records SET resident_code = ? WHERE resident_code = ?",
+			"UPDATE travel_records SET resident_code = ? WHERE resident_code = ?",
+			"UPDATE npc_panel_state SET resident_code = ? WHERE resident_code = ?",
+		} {
+			if _, err := tx.ExecContext(ctx, stmt, newCode, oldCode); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM residents WHERE code = ?", oldCode); err != nil {
+			return err
+		}
+		return s.insertAudit(ctx, tx, "resident.update", fmt.Sprintf("居民资料更新：%s(%s -> %s)", name, oldCode, newCode), operator, now)
 	})
 	if err != nil {
 		return nil, err
@@ -309,9 +366,9 @@ func (s *Store) CreateGoldRecord(ctx context.Context, in GoldInput) (*AppState, 
 	}
 	now := s.nowString()
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		session, err := s.currentSessionTx(ctx, tx)
-		if err != nil {
-			return err
+		operator := ""
+		if session, _ := s.currentSessionTx(ctx, tx); session != nil {
+			operator = session.Operator
 		}
 		resident, err := s.residentTx(ctx, tx, in.Code)
 		if err != nil {
@@ -345,10 +402,10 @@ func (s *Store) CreateGoldRecord(ctx context.Context, in GoldInput) (*AppState, 
 			resident_code, resident_name_snapshot, identity_snapshot, record_type, amount,
 			balance_after, remark, affect_balance, voided, balance_reverted, operator, occurred_at
 		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`,
-			in.Code, resident.Name, resident.Identity, in.Type, amount, nextBalance, remark, boolInt(affectBalance), session.Operator, now); err != nil {
+			in.Code, resident.Name, resident.Identity, in.Type, amount, nextBalance, remark, boolInt(affectBalance), operator, now); err != nil {
 			return err
 		}
-		return s.insertAudit(ctx, tx, "gold.create", fmt.Sprintf("%s：%s %d", goldTypeLabel(in.Type), resident.Name, amount), session.Operator, now)
+		return s.insertAudit(ctx, tx, "gold.create", fmt.Sprintf("%s：%s %d", goldTypeLabel(in.Type), resident.Name, amount), operator, now)
 	})
 	if err != nil {
 		return nil, err
@@ -750,6 +807,22 @@ func (s *Store) ensureResidentTx(ctx context.Context, tx *sql.Tx, code, name, ki
 	return err
 }
 
+func appendProfileChangeNotes(remark string, notes []string) string {
+	clean := make([]string, 0, len(notes))
+	for _, note := range notes {
+		note = strings.TrimSpace(note)
+		if note != "" {
+			clean = append(clean, note)
+		}
+	}
+	if len(clean) == 0 {
+		return remark
+	}
+	if remark == "" {
+		return strings.Join(clean, "；")
+	}
+	return remark + "；" + strings.Join(clean, "；")
+}
 func (s *Store) setIdentityIfChangedTx(ctx context.Context, tx *sql.Tx, code, identity, operator, now string) error {
 	var name, current string
 	err := tx.QueryRowContext(ctx, "SELECT name, identity_current FROM residents WHERE code = ?", code).Scan(&name, &current)
@@ -969,13 +1042,13 @@ func (s *Store) searchResidentRows(ctx context.Context, opts residentSearchOptio
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	_, historyTexts, err := s.loadIdentityHistoryForCodes(ctx, codes)
+	history, historyTexts, err := s.loadIdentityHistoryForCodes(ctx, codes)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]RoleDTO, 0, len(residents))
 	for _, resident := range residents {
-		out = append(out, resident.toRole(nil, historyTexts[resident.Code]))
+		out = append(out, resident.toRole(history[resident.Code], historyTexts[resident.Code]))
 	}
 	return out, nil
 }
