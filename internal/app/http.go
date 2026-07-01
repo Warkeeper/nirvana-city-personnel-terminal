@@ -62,6 +62,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/summary", s.handleSummary)
 	mux.HandleFunc("/api/v1/export/full-data", s.handleExportData)
 	mux.HandleFunc("/api/v1/export/full.xlsx", s.handleExportXLSX)
+	mux.HandleFunc("/api/v1/cloud/ncpt/sync", s.writeHandler(s.handleNCPTCloudSync))
 	mux.HandleFunc("/api/v1/shutdown", s.writeHandler(s.handleShutdown))
 	mux.HandleFunc("/", s.handleFrontend)
 	return mux
@@ -329,6 +330,19 @@ func (s *Server) handleExportXLSX(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(bytes)
 }
 
+func (s *Server) handleNCPTCloudSync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var in NCPTCloudSyncInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	stats, err := s.store.UploadNCPTSnapshot(r.Context(), in, &http.Client{Timeout: 60 * time.Second})
+	respond(w, stats, err)
+}
+
 func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -496,7 +510,13 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 func respond(w http.ResponseWriter, value any, err error) {
 	if err != nil {
 		status := http.StatusInternalServerError
+		type statusCoder interface {
+			StatusCode() int
+		}
+		var statusErr statusCoder
 		switch {
+		case errors.As(err, &statusErr):
+			status = statusErr.StatusCode()
 		case errors.Is(err, ErrBadRequest):
 			status = http.StatusBadRequest
 		case errors.Is(err, ErrConflict):

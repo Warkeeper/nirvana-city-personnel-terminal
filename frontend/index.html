@@ -1157,6 +1157,58 @@
     </el-dialog>
 
     <el-dialog
+            title="云端上传"
+            :visible.sync="cloudSyncVisible"
+            width="560px"
+            custom-class="cloud-sync-dialog"
+            :close-on-click-modal="false"
+            @closed="resetCloudSyncToken"
+    >
+        <el-form label-position="top">
+            <el-form-item label="Admin 地址">
+                <el-input
+                        v-model.trim="cloudSyncAdminBaseUrl"
+                        placeholder="https://admin.example.com"
+                        :disabled="cloudSyncLoading"
+                        @keyup.enter.native="submitCloudSync"
+                ></el-input>
+            </el-form-item>
+            <el-form-item label="上传密码">
+                <el-input
+                        v-model="cloudSyncPassword"
+                        type="password"
+                        show-password
+                        autocomplete="new-password"
+                        placeholder="NIRVANA_NCPT_UPLOAD_PASSWORD"
+                        :disabled="cloudSyncLoading"
+                        @keyup.enter.native="submitCloudSync"
+                ></el-input>
+            </el-form-item>
+        </el-form>
+        <el-alert
+                v-if="cloudSyncError"
+                type="error"
+                :closable="false"
+                :title="cloudSyncError"
+                style="margin-bottom:12px;"
+        ></el-alert>
+        <div v-if="cloudSyncResult" class="cloud-sync-result">
+            <div class="summary-row"><strong>批次：</strong>{{ cloudSyncResult.batchId || '未返回' }}</div>
+            <el-table :data="cloudSyncResultRows" size="mini" border style="width:100%;margin:8px 0 10px;">
+                <el-table-column prop="label" label="类型"></el-table-column>
+                <el-table-column prop="created" label="新增" width="80"></el-table-column>
+                <el-table-column prop="updated" label="更新" width="80"></el-table-column>
+                <el-table-column prop="unchanged" label="未变" width="80"></el-table-column>
+            </el-table>
+            <div class="summary-row"><strong>归档：</strong>{{ cloudSyncArchivedText }}</div>
+            <div class="summary-row"><strong>忽略取消进出城：</strong>{{ cloudSyncResult.ignoredCanceledTravelRecords || 0 }}</div>
+        </div>
+        <span slot="footer" class="dialog-footer">
+            <el-button @click="cloudSyncVisible=false" :disabled="cloudSyncLoading">关 闭</el-button>
+            <el-button type="success" @click="submitCloudSync" :loading="cloudSyncLoading">上传</el-button>
+        </span>
+    </el-dialog>
+    <el-dialog
             title="居民维护"
             :visible.sync="maintenanceVisible"
             width="760px"

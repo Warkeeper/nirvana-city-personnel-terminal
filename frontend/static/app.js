@@ -174,7 +174,23 @@
             selectedIdentityPreview() {
                 return this.identityDepartment ? this.buildIdentity(this.identityDepartment, this.identityStage, this.identityCustomDepartment) : ''
             },
-            cloudSyncResultText() { return '' }
+            cloudSyncResultRows() {
+                const result = this.cloudSyncResult || {}
+                const row = (label, key) => {
+                    const stats = result[key] || {}
+                    return {
+                        label,
+                        created: stats.created || 0,
+                        updated: stats.updated || 0,
+                        unchanged: stats.unchanged || 0
+                    }
+                }
+                return [row('居民档案', 'residents'), row('金条流水', 'goldRecords'), row('进出城记录', 'travelRecords')]
+            },
+            cloudSyncArchivedText() {
+                if (!this.cloudSyncResult) return ''
+                return this.cloudSyncResult.archivedPayload ? '已归档' : '未归档'
+            }
         },
         methods: {
             idempotencyKey() {
@@ -943,7 +959,14 @@
                 }
             },
             openCloudSync() {
-                this.$message.info('本地 SQLite 重构已完成，云同步将在后续版本重构。')
+                try {
+                    const savedBaseUrl = window.localStorage && window.localStorage.getItem('ncpt-cloud-admin-base-url')
+                    if (!this.cloudSyncAdminBaseUrl && savedBaseUrl) this.cloudSyncAdminBaseUrl = savedBaseUrl
+                } catch (err) {}
+                this.cloudSyncPassword = ''
+                this.cloudSyncResult = null
+                this.cloudSyncError = ''
+                this.cloudSyncVisible = true
             },
             resetCloudSyncToken() {
                 this.cloudSyncToken = ''
@@ -951,7 +974,32 @@
                 this.cloudSyncResult = null
                 this.cloudSyncError = ''
             },
-            submitCloudSync() { this.openCloudSync() },
+            async submitCloudSync() {
+                const adminBaseUrl = String(this.cloudSyncAdminBaseUrl || '').trim()
+                const password = String(this.cloudSyncPassword || '')
+                if (!adminBaseUrl) return this.$message.warning('请输入 admin 地址')
+                if (!password) return this.$message.warning('请输入上传密码')
+                this.cloudSyncLoading = true
+                this.cloudSyncError = ''
+                this.cloudSyncResult = null
+                try {
+                    try {
+                        if (window.localStorage) window.localStorage.setItem('ncpt-cloud-admin-base-url', adminBaseUrl)
+                    } catch (err) {}
+                    const result = await this.api('/api/v1/cloud/ncpt/sync', {
+                        method: 'POST',
+                        body: {adminBaseUrl, password}
+                    })
+                    this.cloudSyncResult = result || {}
+                    this.cloudSyncPassword = ''
+                    this.$message.success('云端上传完成')
+                } catch (err) {
+                    this.cloudSyncError = err.message || String(err)
+                    this.$message.error(this.cloudSyncError)
+                } finally {
+                    this.cloudSyncLoading = false
+                }
+            },
             balanceOperateRemarkQuerySearch(queryString, cb) {
                 const suggestions = ['每日工资', '任务奖励', '罚没违规物资', '税收', '来自人事的爱']
                 cb(suggestions.filter(item => item.includes(queryString)).map(item => ({value: item})))
