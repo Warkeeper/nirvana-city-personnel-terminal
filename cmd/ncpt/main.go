@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata"
@@ -61,7 +62,7 @@ func run() error {
 	}
 	defer store.Close()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := listenLocal(defaultListenPort)
 	if err != nil {
 		return err
 	}
@@ -106,6 +107,31 @@ func run() error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+const defaultListenPort = 23456
+
+func listenLocal(preferredPort int) (net.Listener, error) {
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", preferredPort))
+	if err == nil {
+		return listener, nil
+	}
+	if !isAddressInUse(err) {
+		return nil, err
+	}
+	return net.Listen("tcp", "127.0.0.1:0")
+}
+
+func isAddressInUse(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) && errno == syscall.Errno(10048) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "address already in use") || strings.Contains(message, "only one usage")
 }
 
 func runMerge(dataDir string, mergePath string) error {

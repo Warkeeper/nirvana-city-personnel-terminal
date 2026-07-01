@@ -94,7 +94,7 @@ func TestNCPTCloudSyncEndpointLogsInAndUploads(t *testing.T) {
 	var received NCPTSyncRequest
 	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/ncpt/auth/login":
+		case "/admin/api/ncpt/auth/login":
 			if r.Method != http.MethodPost {
 				t.Fatalf("login method = %s", r.Method)
 			}
@@ -106,7 +106,7 @@ func TestNCPTCloudSyncEndpointLogsInAndUploads(t *testing.T) {
 				t.Fatalf("login password = %#v", body)
 			}
 			writeAdminEnvelope(w, http.StatusOK, 0, "ok", map[string]any{"token": "token-1", "expiresAt": int64(1)})
-		case "/api/ncpt/sync":
+		case "/admin/api/ncpt/sync":
 			if r.Header.Get("Authorization") != "Bearer token-1" {
 				t.Fatalf("sync authorization = %q", r.Header.Get("Authorization"))
 			}
@@ -126,7 +126,7 @@ func TestNCPTCloudSyncEndpointLogsInAndUploads(t *testing.T) {
 
 	var result NCPTSyncStats
 	status := env.writeJSON(t, http.MethodPost, "/api/v1/cloud/ncpt/sync", map[string]any{
-		"adminBaseUrl": admin.URL + "/admin",
+		"adminBaseUrl": admin.URL + "/admin/",
 		"password":     "secret",
 	}, "cloud-sync-ok", &result)
 	if status != http.StatusOK {

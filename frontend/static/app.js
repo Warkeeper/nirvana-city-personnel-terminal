@@ -15,6 +15,8 @@
         }
     }
 
+    const defaultCloudSyncAdminBaseUrl = 'https://nirvana-notes.cn/nirvana-city-admin'
+
     function ensureOfflineDepsReady() {
         const missing = []
         if (!window.Vue) missing.push('Vue')
@@ -961,8 +963,9 @@
             openCloudSync() {
                 try {
                     const savedBaseUrl = window.localStorage && window.localStorage.getItem('ncpt-cloud-admin-base-url')
-                    if (!this.cloudSyncAdminBaseUrl && savedBaseUrl) this.cloudSyncAdminBaseUrl = savedBaseUrl
+                    if (!this.cloudSyncAdminBaseUrl && String(savedBaseUrl || '').trim()) this.cloudSyncAdminBaseUrl = savedBaseUrl
                 } catch (err) {}
+                if (!this.cloudSyncAdminBaseUrl) this.cloudSyncAdminBaseUrl = defaultCloudSyncAdminBaseUrl
                 this.cloudSyncPassword = ''
                 this.cloudSyncResult = null
                 this.cloudSyncError = ''

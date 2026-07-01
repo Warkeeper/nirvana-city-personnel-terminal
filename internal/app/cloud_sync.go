@@ -525,7 +525,7 @@ func normalizeAdminBaseURL(raw string) (string, error) {
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", fmt.Errorf("%w: adminBaseUrl must use http or https", ErrBadRequest)
 	}
-	parsed.Path = ""
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	parsed.RawPath = ""
 	parsed.RawQuery = ""
 	parsed.Fragment = ""

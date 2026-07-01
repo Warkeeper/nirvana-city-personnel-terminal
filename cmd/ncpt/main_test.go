@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +9,26 @@ import (
 
 	"nirvana-city-personnel-terminal/internal/app"
 )
+
+func TestListenLocalFallsBackWhenPreferredPortIsBusy(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+
+	busyPort := busy.Addr().(*net.TCPAddr).Port
+	listener, err := listenLocal(busyPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	gotPort := listener.Addr().(*net.TCPAddr).Port
+	if gotPort == busyPort {
+		t.Fatalf("listener stayed on busy port %d", gotPort)
+	}
+}
 
 func TestRunMergeRejectsRunningInstance(t *testing.T) {
 	dataDir := t.TempDir()
