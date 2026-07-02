@@ -8,7 +8,7 @@
 go run ./cmd/ncpt
 ```
 
-程序会监听 `127.0.0.1:23456`，如果端口已被占用则回退到随机端口，并自动打开浏览器。默认数据目录在二进制同级：
+程序会监听 `127.0.0.1:23458`，如果端口已被占用则回退到随机端口，并自动打开浏览器。默认数据目录在二进制同级：
 
 - `data/ncfms.db`
 - `data/backups`
@@ -22,6 +22,37 @@ ncpt.exe -data-dir D:\ncfms-data
 ```
 
 同一个 `data-dir` 只允许一个实例运行。第二个实例会读取已运行实例的 URL，打开浏览器后退出。
+
+## 服务器反向代理部署
+
+服务端部署仍保持应用本机监听，不需要把程序改成公网监听。推荐启动方式：
+
+```powershell
+ncpt.exe --no-browser -data-dir D:\ncfms-data
+```
+
+公网入口放在 HTTPS 反向代理层，并在反代层做 Basic Auth、IP 白名单或 VPN/Tailscale 等访问控制。应用自身不提供公网登录保护，不能直接裸露到公网。
+
+挂载到 `/ncpt/` 时，让反向代理剥离 `/ncpt/` 前缀后转发到本机端口：
+
+```nginx
+location = /ncpt {
+    return 301 /ncpt/;
+}
+
+location ^~ /ncpt/ {
+    auth_basic "NCPT";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+    proxy_pass http://127.0.0.1:23458/;
+}
+```
+
+不要在公网根路径单独配置 `/api/v1` 代理；公网访问面应统一限制在 `/ncpt/` 下。本机直接访问 `http://127.0.0.1:23458/` 的使用方式保持不变。
 
 ## Excel 合并导入
 

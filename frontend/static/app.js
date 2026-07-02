@@ -17,6 +17,32 @@
 
     const defaultCloudSyncAdminBaseUrl = 'https://nirvana-notes.cn/nirvana-city-admin'
 
+    function detectBasePath() {
+        const marker = '/static/app.js'
+        const scripts = Array.prototype.slice.call(document.scripts || [])
+        const current = document.currentScript || scripts.find(script => {
+            const source = script && (script.src || script.getAttribute('src') || '')
+            return source.includes(marker)
+        })
+        const source = current && (current.src || current.getAttribute('src'))
+        if (!source) return ''
+        try {
+            const pathname = new URL(source, window.location.href).pathname
+            const index = pathname.lastIndexOf(marker)
+            if (index <= 0) return ''
+            return pathname.slice(0, index).replace(/\/+$/, '')
+        } catch (err) {
+            return ''
+        }
+    }
+
+    const basePath = detectBasePath()
+
+    function appPath(path) {
+        if (!path || path[0] !== '/') return path
+        return basePath + path
+    }
+
     function ensureOfflineDepsReady() {
         const missing = []
         if (!window.Vue) missing.push('Vue')
@@ -210,7 +236,7 @@
                     headers['X-NCFMS-CSRF'] = this.csrfToken
                     headers['Idempotency-Key'] = options.idempotencyKey || this.idempotencyKey()
                 }
-                const response = await fetch(path, {method, headers, body})
+                const response = await fetch(appPath(path), {method, headers, body})
                 const contentType = response.headers.get('content-type') || ''
                 const data = contentType.includes('application/json') ? await response.json() : await response.text()
                 if (!response.ok) {
@@ -496,7 +522,7 @@
                 const link = document.createElement('a')
                 const now = new Date()
                 const pad = n => String(n).padStart(2, '0')
-                link.href = '/api/v1/export/full.xlsx'
+                link.href = appPath('/api/v1/export/full.xlsx')
                 link.download = `涅槃城账本-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.xlsx`
                 document.body.appendChild(link)
                 link.click()
