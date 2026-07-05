@@ -1318,7 +1318,7 @@
             <div class="role-buttons">
                 <div
                         v-for="r in sortedPlayers"
-                        :key="r.code"
+                        :key="r.travelId ? `player-${r.travelId}` : `player-${r.code}`"
                         class="resident-card"
                         :style="getResidentCardStyle(r)"
                         @contextmenu.prevent="openSummary(r)"

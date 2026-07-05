@@ -137,6 +137,16 @@ func (s *Store) EnterPlayer(ctx context.Context, in EnterResidentInput) (*AppSta
 			return fmt.Errorf("%w: %v", ErrBadRequest, err)
 		}
 		leaveAt := enterAt.Add(time.Duration(stayMinutes) * time.Minute)
+		var activeTravelID int64
+		err = tx.QueryRowContext(ctx, `SELECT id FROM travel_records
+			WHERE session_opened_at = ? AND resident_code = ? AND canceled_at IS NULL AND hidden_at IS NULL
+			LIMIT 1`, session.OpenedAt, in.Code).Scan(&activeTravelID)
+		if err == nil {
+			return fmt.Errorf("%w: resident is already in current city session", ErrConflict)
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		if err := s.ensureResidentTx(ctx, tx, in.Code, in.Name, KindPlayer, in.Balance, in.Identity, in.Remark, now); err != nil {
 			return err
 		}
@@ -150,6 +160,9 @@ func (s *Store) EnterPlayer(ctx context.Context, in EnterResidentInput) (*AppSta
 			session.OpenedAt, in.Code, in.Name, in.Identity, enterAt.In(s.loc).Format(time.RFC3339),
 			leaveAt.In(s.loc).Format(time.RFC3339), stayMinutes, session.Operator, now)
 		if err != nil {
+			if isActiveTravelUniqueConstraintError(err) {
+				return fmt.Errorf("%w: resident is already in current city session", ErrConflict)
+			}
 			return err
 		}
 		return s.insertAudit(ctx, tx, "travel.enter", fmt.Sprintf("城邦居民进城：%s(%s)", in.Name, in.Code), session.Operator, now)
@@ -158,6 +171,17 @@ func (s *Store) EnterPlayer(ctx context.Context, in EnterResidentInput) (*AppSta
 		return nil, err
 	}
 	return s.State(ctx, "")
+}
+
+func isActiveTravelUniqueConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "idx_travel_records_active_unique") ||
+		(strings.Contains(message, "unique constraint") &&
+			strings.Contains(message, "travel_records.session_opened_at") &&
+			strings.Contains(message, "travel_records.resident_code"))
 }
 
 type NPCInput struct {

@@ -11,7 +11,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	return s.withTx(ctx, func(tx *sql.Tx) error {
-		stmts := []string{
+		tableStmts := []string{
 			`CREATE TABLE IF NOT EXISTS schema_migrations (
 				version INTEGER PRIMARY KEY,
 				applied_at TEXT NOT NULL
@@ -98,16 +98,8 @@ func (s *Store) migrate(ctx context.Context) error {
 				operator TEXT NOT NULL DEFAULT '',
 				created_at TEXT NOT NULL
 			)`,
-			`CREATE INDEX IF NOT EXISTS idx_residents_kind ON residents(kind)`,
-			`CREATE INDEX IF NOT EXISTS idx_identity_history_code ON identity_history(resident_code, occurred_at)`,
-			`CREATE INDEX IF NOT EXISTS idx_gold_records_code_time ON gold_records(resident_code, occurred_at)`,
-			`CREATE INDEX IF NOT EXISTS idx_gold_records_time ON gold_records(occurred_at)`,
-			`CREATE INDEX IF NOT EXISTS idx_travel_records_session ON travel_records(session_opened_at, resident_code)`,
-			`CREATE INDEX IF NOT EXISTS idx_travel_records_enter ON travel_records(enter_at)`,
-			`CREATE INDEX IF NOT EXISTS idx_travel_records_leave_visible ON travel_records(leave_at, canceled_at, hidden_at)`,
-			`CREATE INDEX IF NOT EXISTS idx_travel_extensions_travel ON travel_extensions(travel_id)`,
 		}
-		for _, stmt := range stmts {
+		for _, stmt := range tableStmts {
 			if _, err := tx.ExecContext(ctx, stmt); err != nil {
 				return err
 			}
@@ -119,6 +111,27 @@ func (s *Store) migrate(ctx context.Context) error {
 		if current > schemaVersion {
 			return fmt.Errorf("database schema version %d is newer than app schema %d", current, schemaVersion)
 		}
+		if err := s.cleanupDuplicateActiveTravelRecordsTx(ctx, tx); err != nil {
+			return err
+		}
+		indexStmts := []string{
+			`CREATE INDEX IF NOT EXISTS idx_residents_kind ON residents(kind)`,
+			`CREATE INDEX IF NOT EXISTS idx_identity_history_code ON identity_history(resident_code, occurred_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_gold_records_code_time ON gold_records(resident_code, occurred_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_gold_records_time ON gold_records(occurred_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_travel_records_session ON travel_records(session_opened_at, resident_code)`,
+			`CREATE INDEX IF NOT EXISTS idx_travel_records_enter ON travel_records(enter_at)`,
+			`CREATE INDEX IF NOT EXISTS idx_travel_records_leave_visible ON travel_records(leave_at, canceled_at, hidden_at)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_travel_records_active_unique
+				ON travel_records(session_opened_at, resident_code)
+				WHERE canceled_at IS NULL AND hidden_at IS NULL`,
+			`CREATE INDEX IF NOT EXISTS idx_travel_extensions_travel ON travel_extensions(travel_id)`,
+		}
+		for _, stmt := range indexStmts {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				return err
+			}
+		}
 		if current < schemaVersion {
 			if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)", schemaVersion, s.nowString()); err != nil {
 				return err
@@ -126,4 +139,66 @@ func (s *Store) migrate(ctx context.Context) error {
 		}
 		return nil
 	})
+}
+
+func (s *Store) cleanupDuplicateActiveTravelRecordsTx(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT session_opened_at, resident_code, COUNT(*)
+		FROM travel_records
+		WHERE canceled_at IS NULL AND hidden_at IS NULL
+		GROUP BY session_opened_at, resident_code
+		HAVING COUNT(*) > 1`)
+	if err != nil {
+		return err
+	}
+	type duplicate struct {
+		sessionOpenedAt string
+		code            string
+		count           int
+	}
+	var duplicates []duplicate
+	for rows.Next() {
+		var dup duplicate
+		if err := rows.Scan(&dup.sessionOpenedAt, &dup.code, &dup.count); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		duplicates = append(duplicates, dup)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(duplicates) == 0 {
+		return nil
+	}
+
+	now := s.nowString()
+	for _, dup := range duplicates {
+		res, err := tx.ExecContext(ctx, `UPDATE travel_records
+			SET canceled_at = ?, hidden_at = ?, hidden_after_leave = 0
+			WHERE id IN (
+				SELECT id FROM travel_records
+				WHERE session_opened_at = ? AND resident_code = ? AND canceled_at IS NULL AND hidden_at IS NULL
+				ORDER BY id ASC
+				LIMIT -1 OFFSET 1
+			)`, now, now, dup.sessionOpenedAt, dup.code)
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected > 0 {
+			message := fmt.Sprintf("cleanup duplicate active travel records: session=%s code=%s canceled=%d", dup.sessionOpenedAt, dup.code, affected)
+			if _, err := tx.ExecContext(ctx, `INSERT INTO audit_events(kind, message, operator, created_at)
+				VALUES(?, ?, ?, ?)`, "migration.travel.dedupe", message, "", now); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

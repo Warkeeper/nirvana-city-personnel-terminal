@@ -161,12 +161,11 @@
             players() { return this.roles.filter(r => r.type === 'player') },
             npcs() { return this.roles.filter(r => r.type === 'npc') },
             sortedPlayers() {
-                const hiddenCodes = new Set((this.session.hiddenResidentCodes || []).map(code => this.normalizeResidentCode(code)).filter(Boolean))
                 const getLeaveAt = (player) => {
                     const time = new Date(player.leaveTime).getTime()
                     return Number.isFinite(time) ? time : Number.MAX_SAFE_INTEGER
                 }
-                return this.players.filter(player => !hiddenCodes.has(this.normalizeResidentCode(player.code))).sort((a, b) => {
+                return this.players.slice().sort((a, b) => {
                     const leaveDiff = getLeaveAt(a) - getLeaveAt(b)
                     if (leaveDiff !== 0) return leaveDiff
                     return String(a.code || '').trim().localeCompare(String(b.code || '').trim(), 'zh-Hans-CN', {sensitivity: 'base'})
@@ -746,10 +745,11 @@
             },
             buildTodayEnterTimeIso(timeText) { return String(timeText || this.getDefaultEnterTime()) },
             async addRole() {
-                const roleCode = String(this.newRoleCode || '').trim()
+                const roleCode = this.normalizeResidentCode(this.newRoleCode)
                 const roleName = String(this.newRoleName || '').trim()
                 if (!roleCode || !roleName) return this.$message.error('请填写姓名和编号')
                 if (this.isPlaceholderResidentName(roleName)) return this.$message.error('请填写真实姓名')
+                if (this.residentCodeExists(this.players, roleCode)) return this.$message.error('该居民已在当前城邦中')
                 if (this.newRoleStayHours <= 0) return this.$message.error('进城时长必须大于 0')
                 if (!this.newRoleEnterTime) return this.$message.error('请选择进城时间')
                 const defaultIdentity = this.matchedHistoricalPlayer ? (this.newRoleIdentity || '未设置') : this.buildIdentity(this.newRoleDepartment, '实习中', this.newRoleCustomDepartment)

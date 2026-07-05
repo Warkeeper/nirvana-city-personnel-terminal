@@ -411,6 +411,69 @@ func TestEnterPlayerTimeUsesCurrentOpenCityDate(t *testing.T) {
 	}
 }
 
+func TestEnterPlayerRejectsDuplicateActiveResident(t *testing.T) {
+	env := newTestEnv(t)
+	env.openCity(t, "dup-op")
+	state := env.enterPlayer(t, "enter-dup-first", "01234", "Zero", 0)
+	first := findPlayer(t, state, "01234")
+
+	var errBody map[string]any
+	status := env.writeJSON(t, http.MethodPost, "/api/v1/residents/player/enter", map[string]any{
+		"code": " 01234 ", "name": "Zero Duplicate", "balance": int64(1), "identity": "guard", "enterTime": "14:30", "stayHours": 2,
+	}, "enter-dup-second", &errBody)
+	if status != http.StatusConflict {
+		t.Fatalf("duplicate active enter status=%d body=%v", status, errBody)
+	}
+
+	var boot AppState
+	env.getJSON(t, "/api/v1/bootstrap", &boot)
+	if got := countPlayers(boot, "01234"); got != 1 {
+		t.Fatalf("visible players for 01234=%d roles=%#v", got, boot.Session.Roles)
+	}
+	if got := findPlayer(t, boot, "01234").TravelID; got != first.TravelID {
+		t.Fatalf("duplicate enter changed active travel id: got %d want %d", got, first.TravelID)
+	}
+	if got := boot.Stats.TodayEntered; got != 1 {
+		t.Fatalf("today entered after duplicate=%d want 1", got)
+	}
+	if got := boot.Stats.CurrentInCity; got != 1 {
+		t.Fatalf("current in city after duplicate=%d want 1", got)
+	}
+
+	state = env.enterPlayer(t, "enter-distinct-1234", "1234", "Distinct", 0)
+	findPlayer(t, state, "1234")
+}
+
+func TestEnterPlayerAllowsSameResidentAfterHide(t *testing.T) {
+	env := newTestEnv(t)
+	env.openCity(t, "reenter-op")
+	state := env.enterPlayer(t, "enter-reenter-first", "R-001", "Reenter", 0)
+	firstTravelID := findPlayer(t, state, "R-001").TravelID
+
+	status := env.writeJSON(t, http.MethodPost, "/api/v1/travel/hide", map[string]any{"travelId": firstTravelID}, "hide-reenter-first", &state)
+	if status != http.StatusOK {
+		t.Fatalf("hide before reenter status=%d", status)
+	}
+	if got := countPlayers(state, "R-001"); got != 0 {
+		t.Fatalf("hidden player still visible before reenter: count=%d roles=%#v", got, state.Session.Roles)
+	}
+
+	state = env.enterPlayer(t, "enter-reenter-second", " R-001 ", "Reenter", 0)
+	second := findPlayer(t, state, "R-001")
+	if second.TravelID == 0 || second.TravelID == firstTravelID {
+		t.Fatalf("reenter did not create a fresh travel record: first=%d second=%d", firstTravelID, second.TravelID)
+	}
+	if got := countPlayers(state, "R-001"); got != 1 {
+		t.Fatalf("visible players after reenter=%d roles=%#v", got, state.Session.Roles)
+	}
+	if got := state.Stats.TodayEntered; got != 1 {
+		t.Fatalf("today entered after reenter=%d want 1", got)
+	}
+	if got := state.Stats.CurrentInCity; got != 1 {
+		t.Fatalf("current in city after reenter=%d want 1", got)
+	}
+}
+
 func TestExtendTravelAllowsNegativeAdjustmentWithMinimumStay(t *testing.T) {
 	env := newTestEnv(t)
 	env.openCity(t, "time-op")
@@ -471,6 +534,96 @@ func TestNewSchemaUsesOpenedAtSessionKey(t *testing.T) {
 	assertColumnPresence(t, env.store, "city_sessions", "opened_at", true)
 	assertColumnPresence(t, env.store, "travel_records", "session_id", false)
 	assertColumnPresence(t, env.store, "travel_records", "session_opened_at", true)
+}
+
+func TestMigrationDedupesActiveTravelRecordsAndCreatesUniqueIndex(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 6, 18, 15, 0, 0, 0, loc)
+	dir := t.TempDir()
+	seed, err := OpenStore(context.Background(), Config{DataDir: dir, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := sql.Open("sqlite", sqliteDSN(filepath.Join(dir, "ncfms.db")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustExec := func(stmt string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(stmt, args...); err != nil {
+			t.Fatalf("exec %q: %v", stmt, err)
+		}
+	}
+	openedAt := now.Format(time.RFC3339)
+	enterAt := now.Add(time.Minute).Format(time.RFC3339)
+	secondEnterAt := now.Add(2 * time.Minute).Format(time.RFC3339)
+	leaveAt := now.Add(2 * time.Hour).Format(time.RFC3339)
+	mustExec("DROP INDEX IF EXISTS idx_travel_records_active_unique")
+	mustExec("DELETE FROM schema_migrations")
+	mustExec("INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)", 2, openedAt)
+	mustExec("INSERT INTO city_sessions(opened_at, operator) VALUES(?, ?)", openedAt, "migration-op")
+	mustExec(`INSERT INTO residents(code, name, kind, balance, identity_current, remark, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, "DUP-001", "Duplicate", KindPlayer, int64(0), "identity", "", openedAt, openedAt)
+	mustExec(`INSERT INTO identity_history(resident_code, resident_name_snapshot, identity, occurred_at)
+		VALUES(?, ?, ?, ?)`, "DUP-001", "Duplicate", "identity", openedAt)
+	mustExec(`INSERT INTO travel_records(session_opened_at, resident_code, resident_name_snapshot, identity_snapshot, enter_at, leave_at, stay_minutes, operator, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, openedAt, "DUP-001", "Duplicate", "identity", enterAt, leaveAt, 120, "migration-op", openedAt)
+	mustExec(`INSERT INTO travel_records(session_opened_at, resident_code, resident_name_snapshot, identity_snapshot, enter_at, leave_at, stay_minutes, operator, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, openedAt, "DUP-001", "Duplicate", "identity", secondEnterAt, leaveAt, 120, "migration-op", openedAt)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	migrated, err := OpenStore(context.Background(), Config{DataDir: dir, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer migrated.Close()
+	if got := migrated.SchemaVersion(context.Background()); got != schemaVersion {
+		t.Fatalf("schema version=%d want %d", got, schemaVersion)
+	}
+
+	var active, canceled int
+	if err := migrated.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM travel_records
+		WHERE session_opened_at = ? AND resident_code = ? AND canceled_at IS NULL AND hidden_at IS NULL`, openedAt, "DUP-001").Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrated.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM travel_records
+		WHERE session_opened_at = ? AND resident_code = ? AND canceled_at IS NOT NULL AND hidden_at IS NOT NULL`, openedAt, "DUP-001").Scan(&canceled); err != nil {
+		t.Fatal(err)
+	}
+	if active != 1 || canceled != 1 {
+		t.Fatalf("migration active=%d canceled=%d, want 1/1", active, canceled)
+	}
+	var indexName string
+	if err := migrated.db.QueryRowContext(context.Background(), `SELECT name FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_travel_records_active_unique'`).Scan(&indexName); err != nil {
+		t.Fatal(err)
+	}
+	state, err := migrated.State(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countPlayers(*state, "DUP-001"); got != 1 {
+		t.Fatalf("visible duplicate players after migration=%d roles=%#v", got, state.Session.Roles)
+	}
+	if got := findPlayer(t, *state, "DUP-001").TravelID; got != 1 {
+		t.Fatalf("migration kept travel id=%d want earliest id 1", got)
+	}
+	var audits int
+	if err := migrated.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM audit_events WHERE kind = ?", "migration.travel.dedupe").Scan(&audits); err != nil {
+		t.Fatal(err)
+	}
+	if audits != 1 {
+		t.Fatalf("migration dedupe audit rows=%d want 1", audits)
+	}
 }
 
 func TestOpenStoreRejectsLegacySessionSchema(t *testing.T) {
@@ -939,6 +1092,16 @@ func findPlayer(t *testing.T, state AppState, code string) RoleDTO {
 	}
 	t.Fatalf("player %s not found in roles %#v", code, state.Session.Roles)
 	return RoleDTO{}
+}
+
+func countPlayers(state AppState, code string) int {
+	count := 0
+	for _, role := range state.Session.Roles {
+		if role.Type == KindPlayer && role.Code == code {
+			count++
+		}
+	}
+	return count
 }
 
 func findRecordID(t *testing.T, state AppState, typ string) int64 {
