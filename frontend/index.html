@@ -1632,7 +1632,7 @@
 
         <span slot="footer">
             <el-button @click="cancelAddNpc">取消</el-button>
-            <el-button type="primary" @click="addNpcRole">新增常驻居民</el-button>
+            <el-button type="primary" @click="addNpcRole">{{ npcAddSelectedCode ? '加入常驻面板' : '新增常驻居民' }}</el-button>
         </span>
     </el-dialog>
     <!-- ===== 常驻配置 ===== -->

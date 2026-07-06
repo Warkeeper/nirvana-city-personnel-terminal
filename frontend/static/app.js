@@ -677,8 +677,26 @@
                 this.npcNewBalance = Number(candidate.balance || 0)
             },
             async addNpcRole() {
+                const selectedNpc = this.npcAddMatchedCandidates.find(npc => npc._candidateKey === this.npcAddSelectedCode)
+                if (selectedNpc) {
+                    const code = this.normalizeResidentCode(selectedNpc.code)
+                    if (!code) return this.$message.error('常驻居民编号无效')
+                    try {
+                        if (this.isNpcInConfig(selectedNpc)) {
+                            this.npcAddVisible = false
+                            this.resetNpcAddForm()
+                            return this.$message.info('该常驻居民已在面板中')
+                        }
+                        await this.write('/api/v1/npc/panel', {code, visible: true})
+                        this.npcAddVisible = false
+                        this.resetNpcAddForm()
+                        return this.$message.success('常驻居民已添加到面板')
+                    } catch (err) {
+                        return this.$message.error(err.message || err)
+                    }
+                }
                 const name = String(this.npcNewName || '').trim()
-                const code = String(this.npcNewCode || '').trim()
+                const code = this.normalizeResidentCode(this.npcNewCode)
                 const identity = String(this.npcNewIdentity || '').trim() || '未设置'
                 const balance = Number(this.npcNewBalance || 0)
                 if (!name || !code) return this.$message.error('请填写姓名和编号')
