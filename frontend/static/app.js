@@ -17,6 +17,32 @@
 
     const defaultCloudSyncAdminBaseUrl = 'https://nirvana-notes.cn/nirvana-city-admin'
 
+    function padDatePart(value) {
+        return String(value).padStart(2, '0')
+    }
+
+    function localDateText(value) {
+        const date = value instanceof Date ? value : new Date(value)
+        return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`
+    }
+
+    function shanghaiTodayText() {
+        const values = {}
+        new Intl.DateTimeFormat('en-US', {
+            timeZone: 'Asia/Shanghai',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        }).formatToParts(new Date()).forEach(part => {
+            if (part.type !== 'literal') values[part.type] = part.value
+        })
+        return `${values.year}-${values.month}-${values.day}`
+    }
+
+    const ledgerDatePickerOptions = {
+        disabledDate(date) { return localDateText(date) > shanghaiTodayText() }
+    }
+
     function detectBasePath() {
         const marker = '/static/app.js'
         const scripts = Array.prototype.slice.call(document.scripts || [])
@@ -79,6 +105,19 @@
             maintenanceSearchPerformed: false,
             maintenanceResults: [],
             maintenanceSelectedRole: null,
+            ledgerVisible: false,
+            ledgerMode: 'city',
+            ledgerResident: null,
+            ledgerDate: '',
+            ledgerRecords: [],
+            ledgerPage: 1,
+            ledgerPageSize: 20,
+            ledgerPageSizes: [20, 50, 100],
+            ledgerTotal: 0,
+            ledgerLoading: false,
+            ledgerError: '',
+            ledgerRequestID: 0,
+            ledgerDatePickerOptions,
             openCityVisible: false,
             openCityOperator: '',
             openCityDate: '',
@@ -213,6 +252,12 @@
                     }
                 }
                 return [row('居民档案', 'residents'), row('金条流水', 'goldRecords'), row('进出城记录', 'travelRecords')]
+            },
+            ledgerDialogTitle() {
+                if (this.ledgerMode === 'resident' && this.ledgerResident) {
+                    return `居民流水查询 · ${this.displayResidentName(this.ledgerResident.name)} #${this.ledgerResident.code}`
+                }
+                return '城邦流水查询'
             },
             cloudSyncArchivedText() {
                 if (!this.cloudSyncResult) return ''
@@ -400,6 +445,79 @@
                 this.resetMaintenanceSearch()
                 this.maintenanceSelectedRole = null
                 this.maintenanceVisible = true
+            },
+            openCityLedger() {
+                this.ledgerMode = 'city'
+                this.ledgerResident = null
+                this.ledgerDate = shanghaiTodayText()
+                this.ledgerRecords = []
+                this.ledgerPage = 1
+                this.ledgerPageSize = 20
+                this.ledgerTotal = 0
+                this.ledgerError = ''
+                this.ledgerVisible = true
+                this.$nextTick(() => this.loadLedger(1))
+            },
+            openMaintenanceLedger() {
+                if (!this.maintenanceSelectedRole) return this.$message.warning('请先选择居民')
+                this.ledgerMode = 'resident'
+                this.ledgerResident = {
+                    code: this.normalizeResidentCode(this.maintenanceSelectedRole.code),
+                    name: this.maintenanceSelectedRole.name
+                }
+                this.ledgerDate = ''
+                this.ledgerRecords = []
+                this.ledgerPage = 1
+                this.ledgerPageSize = 20
+                this.ledgerTotal = 0
+                this.ledgerError = ''
+                this.ledgerVisible = true
+                this.$nextTick(() => this.loadLedger(1))
+            },
+            resetLedgerDialog() {
+                this.ledgerRequestID += 1
+                this.ledgerRecords = []
+                this.ledgerTotal = 0
+                this.ledgerError = ''
+                this.ledgerLoading = false
+                this.ledgerResident = null
+            },
+            async loadLedger(page = 1) {
+                if (this.ledgerMode === 'city' && !this.ledgerDate) {
+                    return this.$message.warning('请选择查询日期')
+                }
+                if (this.ledgerMode === 'resident' && !this.ledgerResident?.code) {
+                    return this.$message.warning('未找到要查询的居民编号')
+                }
+                const requestID = ++this.ledgerRequestID
+                const query = new URLSearchParams()
+                query.set('page', String(page))
+                query.set('pageSize', String(this.ledgerPageSize))
+                if (this.ledgerMode === 'city') query.set('date', this.ledgerDate)
+                if (this.ledgerMode === 'resident') query.set('residentCode', this.ledgerResident.code)
+                this.ledgerLoading = true
+                this.ledgerError = ''
+                try {
+                    const data = await this.api(`/api/v1/gold/records/query?${query.toString()}`)
+                    if (requestID !== this.ledgerRequestID) return
+                    this.ledgerRecords = data.records || []
+                    this.ledgerPage = Number(data.page) || page
+                    this.ledgerTotal = Number(data.total) || 0
+                } catch (err) {
+                    if (requestID !== this.ledgerRequestID) return
+                    this.ledgerRecords = []
+                    this.ledgerTotal = 0
+                    this.ledgerError = err.message || String(err)
+                    this.$message.error(this.ledgerError)
+                } finally {
+                    if (requestID === this.ledgerRequestID) this.ledgerLoading = false
+                }
+            },
+            queryCityLedger() { return this.loadLedger(1) },
+            handleLedgerPageChange(page) { return this.loadLedger(page) },
+            handleLedgerSizeChange(pageSize) {
+                this.ledgerPageSize = pageSize
+                return this.loadLedger(1)
             },
             residentKindLabel(role) {
                 return role && role.type === 'npc' ? '常驻居民' : '城邦居民'

@@ -690,6 +690,65 @@ type ResidentSearchInput struct {
 	Limit int
 }
 
+type GoldRecordQueryInput struct {
+	Date         string
+	ResidentCode string
+	Page         int
+	PageSize     int
+}
+
+func (s *Store) QueryGoldRecords(ctx context.Context, in GoldRecordQueryInput) (*GoldRecordPage, error) {
+	if in.Page < 1 {
+		return nil, fmt.Errorf("%w: page must be at least 1", ErrBadRequest)
+	}
+	if in.PageSize < 1 || in.PageSize > 100 {
+		return nil, fmt.Errorf("%w: pageSize must be between 1 and 100", ErrBadRequest)
+	}
+
+	clauses := []string{}
+	args := []any{}
+	date := strings.TrimSpace(in.Date)
+	if date != "" {
+		start, err := time.ParseInLocation("2006-01-02", date, s.loc)
+		if err != nil {
+			return nil, fmt.Errorf("%w: date must use YYYY-MM-DD", ErrBadRequest)
+		}
+		clauses = append(clauses, "occurred_at >= ? AND occurred_at < ?")
+		args = append(args, start.Format(time.RFC3339), start.AddDate(0, 0, 1).Format(time.RFC3339))
+	}
+	if code := normalizeCode(in.ResidentCode); code != "" {
+		clauses = append(clauses, "resident_code = ?")
+		args = append(args, code)
+	}
+	where := ""
+	if len(clauses) > 0 {
+		where = " WHERE " + strings.Join(clauses, " AND ")
+	}
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM gold_records"+where, args...).Scan(&total); err != nil {
+		return nil, err
+	}
+	queryArgs := append(append([]any{}, args...), in.PageSize, (in.Page-1)*in.PageSize)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, resident_code, resident_name_snapshot, identity_snapshot, record_type, amount,
+		balance_after, remark, affect_balance, voided, operator, occurred_at
+		FROM gold_records`+where+`
+		ORDER BY occurred_at DESC, id DESC
+		LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records, err := s.scanGoldRecords(rows)
+	if err != nil {
+		return nil, err
+	}
+	if records == nil {
+		records = []GoldRecordDTO{}
+	}
+	return &GoldRecordPage{Records: records, Page: in.Page, PageSize: in.PageSize, Total: total}, nil
+}
+
 func (s *Store) SearchResidents(ctx context.Context, in ResidentSearchInput) ([]RoleDTO, error) {
 	query := strings.TrimSpace(in.Query)
 	kind := strings.TrimSpace(in.Kind)

@@ -53,6 +53,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/residents/", s.writeHandler(s.handleResidentPath))
 	mux.HandleFunc("/api/v1/identity", s.writeHandler(s.handleSetIdentity))
 	mux.HandleFunc("/api/v1/identity/history/", s.writeHandler(s.handleIdentityHistoryPath))
+	mux.HandleFunc("/api/v1/gold/records/query", s.handleQueryGoldRecords)
 	mux.HandleFunc("/api/v1/gold/records", s.writeHandler(s.handleCreateGoldRecord))
 	mux.HandleFunc("/api/v1/gold/records/", s.writeHandler(s.handleGoldRecordPath))
 	mux.HandleFunc("/api/v1/travel/extensions", s.writeHandler(s.handleExtendTravel))
@@ -215,6 +216,30 @@ func (s *Server) handleCreateGoldRecord(w http.ResponseWriter, r *http.Request) 
 	respond(w, state, err)
 }
 
+func (s *Server) handleQueryGoldRecords(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+	page, err := queryInt(r, "page", 1)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	pageSize, err := queryInt(r, "pageSize", 20)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	result, err := s.store.QueryGoldRecords(r.Context(), GoldRecordQueryInput{
+		Date:         r.URL.Query().Get("date"),
+		ResidentCode: r.URL.Query().Get("residentCode"),
+		Page:         page,
+		PageSize:     pageSize,
+	})
+	respond(w, result, err)
+}
+
 func (s *Server) handleGoldRecordPath(w http.ResponseWriter, r *http.Request) {
 	rel := strings.TrimPrefix(r.URL.Path, "/api/v1/gold/records/")
 	if !strings.HasSuffix(rel, "/void") {
@@ -233,6 +258,18 @@ func (s *Server) handleGoldRecordPath(w http.ResponseWriter, r *http.Request) {
 	}
 	state, err := s.store.VoidGoldRecord(r.Context(), id)
 	respond(w, state, err)
+}
+
+func queryInt(r *http.Request, name string, defaultValue int) (int, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return defaultValue, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s must be an integer", ErrBadRequest, name)
+	}
+	return value, nil
 }
 
 func (s *Server) handleExtendTravel(w http.ResponseWriter, r *http.Request) {

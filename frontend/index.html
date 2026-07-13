@@ -358,6 +358,48 @@
             margin-top: 12px;
         }
 
+        .ledger-query-dialog {
+            max-width: 1280px;
+            margin-top: 4vh !important;
+            overflow: hidden;
+        }
+
+        .ledger-query-dialog .el-dialog__body {
+            padding: 14px 20px 18px;
+        }
+
+        .ledger-query-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+
+        .ledger-query-toolbar-label {
+            color: #606266;
+            font-size: 14px;
+            white-space: nowrap;
+        }
+
+        .ledger-resident-context {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 14px;
+            color: #606266;
+        }
+
+        .ledger-pagination {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 16px;
+            overflow-x: auto;
+        }
+
+        .ledger-error {
+            margin-bottom: 12px;
+        }
+
 
         @media (max-width: 768px) {
             .role-section-header {
@@ -409,6 +451,21 @@
 
             .resident-maintenance-header {
                 flex-wrap: wrap;
+            }
+
+            .ledger-query-dialog {
+                width: 96% !important;
+                margin-top: 4vh !important;
+            }
+
+            .ledger-query-toolbar {
+                align-items: stretch;
+                flex-direction: column;
+            }
+
+            .ledger-query-toolbar .el-date-editor,
+            .ledger-query-toolbar .el-button {
+                width: 100%;
             }
 
             .npc-config-row {
@@ -979,12 +1036,15 @@
             border-color: #444;
         }
 
-        .dark .el-dialog {
+        .dark .el-dialog,
+        .el-dialog.dark {
             background: #2a2a2a;
         }
 
         .dark .el-dialog__title,
-        .dark .el-dialog__body {
+        .dark .el-dialog__body,
+        .el-dialog.dark .el-dialog__title,
+        .el-dialog.dark .el-dialog__body {
             color: #eee;
         }
 
@@ -1091,6 +1151,7 @@
             <el-button size="small" type="danger" @click="closeCity">
                 🛑 闭城
             </el-button>
+            <el-button size="small" type="info" icon="el-icon-s-order" @click="openCityLedger">城邦流水查询</el-button>
             <el-button size="small" type="info" @click="openNpcConfig">常驻配置</el-button>
             <el-button size="small" type="info" @click="openResidentMaintenance">居民维护</el-button>
             <el-button size="small" type="primary" @click="exportCurrentData">⬇ 导出当前数据</el-button>
@@ -1256,12 +1317,101 @@
             <div class="resident-maintenance-actions">
                 <el-button size="small" type="warning" icon="el-icon-coin" @click="openMaintenanceGold">金条</el-button>
                 <el-button size="small" type="primary" icon="el-icon-postcard" @click="openMaintenanceIdentity">身份</el-button>
+                <el-button size="small" type="success" icon="el-icon-s-order" @click="openMaintenanceLedger">流水查询</el-button>
                 <el-button size="small" type="info" icon="el-icon-edit" @click="openMaintenanceProfile">姓名 / 编号 / 备注</el-button>
             </div>
         </div>
 
         <span slot="footer">
             <el-button @click="maintenanceVisible=false">关闭</el-button>
+        </span>
+    </el-dialog>
+
+    <!-- ===== Gold ledger query ===== -->
+    <el-dialog
+            :title="ledgerDialogTitle"
+            :visible.sync="ledgerVisible"
+            width="92%"
+            :custom-class="'ledger-query-dialog ' + theme"
+            :close-on-click-modal="false"
+            append-to-body
+            @closed="resetLedgerDialog"
+    >
+        <div v-if="ledgerMode === 'city'" class="ledger-query-toolbar">
+            <span class="ledger-query-toolbar-label">查询日期</span>
+            <el-date-picker
+                    v-model="ledgerDate"
+                    type="date"
+                    value-format="yyyy-MM-dd"
+                    format="yyyy 年 MM 月 dd 日"
+                    placeholder="选择日期"
+                    :picker-options="ledgerDatePickerOptions"
+                    :clearable="false"
+            ></el-date-picker>
+            <el-button type="primary" icon="el-icon-search" :loading="ledgerLoading" @click="queryCityLedger">查询</el-button>
+        </div>
+        <div v-else-if="ledgerResident" class="ledger-resident-context">
+            <span>正在查询</span>
+            <el-tag effect="plain">{{ displayResidentName(ledgerResident.name) }} #{{ ledgerResident.code }}</el-tag>
+            <span>的全部历史流水</span>
+        </div>
+
+        <el-alert
+                v-if="ledgerError"
+                class="ledger-error"
+                type="error"
+                :closable="false"
+                :title="ledgerError"
+        ></el-alert>
+
+        <el-table
+                class="ledger-query-table"
+                v-loading="ledgerLoading"
+                :data="ledgerRecords"
+                :max-height="420"
+                :empty-text="ledgerLoading ? '正在加载流水…' : '暂无流水记录'"
+                border
+                size="small"
+                style="width:100%;"
+        >
+            <el-table-column prop="time" label="时间" width="160"></el-table-column>
+            <el-table-column prop="code" label="编号" width="110"></el-table-column>
+            <el-table-column prop="name" label="名称" min-width="120" show-overflow-tooltip></el-table-column>
+            <el-table-column prop="identity" label="当时身份" min-width="150" show-overflow-tooltip></el-table-column>
+            <el-table-column prop="type" label="类型" width="80"></el-table-column>
+            <el-table-column prop="amount" label="数量" width="80" align="right"></el-table-column>
+            <el-table-column prop="balance" label="操作后余额" width="110" align="right"></el-table-column>
+            <el-table-column prop="remark" label="备注" min-width="160" show-overflow-tooltip>
+                <template slot-scope="s">
+                    <span :class="{ voided:s.row.voided }">{{ s.row.remark || '-' }}</span>
+                </template>
+            </el-table-column>
+            <el-table-column label="状态" width="80">
+                <template slot-scope="s">
+                    <span v-if="s.row.voided" style="color:#f56c6c">已作废</span>
+                    <span v-else style="color:#67c23a">有效</span>
+                </template>
+            </el-table-column>
+            <el-table-column prop="operator" label="操作员" min-width="100" show-overflow-tooltip>
+                <template slot-scope="s">{{ s.row.operator || '-' }}</template>
+            </el-table-column>
+        </el-table>
+
+        <div v-if="ledgerTotal > 0" class="ledger-pagination">
+            <el-pagination
+                    background
+                    :current-page="ledgerPage"
+                    :page-size="ledgerPageSize"
+                    :page-sizes="ledgerPageSizes"
+                    :total="ledgerTotal"
+                    layout="total, sizes, prev, pager, next"
+                    @size-change="handleLedgerSizeChange"
+                    @current-change="handleLedgerPageChange"
+            ></el-pagination>
+        </div>
+
+        <span slot="footer">
+            <el-button @click="ledgerVisible=false">关闭</el-button>
         </span>
     </el-dialog>
     <!-- ===== Add role ===== -->

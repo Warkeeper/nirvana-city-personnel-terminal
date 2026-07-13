@@ -720,6 +720,112 @@ func TestInteractiveStateAndGoldRecordsAreSessionScoped(t *testing.T) {
 	}
 }
 
+func TestQueryGoldRecordsFiltersAndPaginates(t *testing.T) {
+	env := newTestEnv(t)
+	env.openCity(t, "ledger-op")
+	env.enterPlayer(t, "enter-ledger-zero", "01234", "Leading Zero", 0)
+	env.enterPlayer(t, "enter-ledger-plain", "1234", "Plain Code", 0)
+
+	insert := func(code, name, occurredAt string, voided int) {
+		t.Helper()
+		_, err := env.store.db.Exec(`INSERT INTO gold_records(
+			resident_code, resident_name_snapshot, identity_snapshot, record_type, amount,
+			balance_after, remark, affect_balance, voided, balance_reverted, operator, occurred_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			code, name, DefaultIdentity, GoldIn, 1, 1, "seed", 1, voided, 0, "ledger-op", occurredAt)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("01234", "Leading Zero", "2026-06-17T23:59:59+08:00", 0)
+	insert("01234", "Leading Zero", "2026-06-18T00:00:00+08:00", 0)
+	insert("1234", "Plain Code", "2026-06-18T12:00:00+08:00", 1)
+	insert("01234", "Leading Zero", "2026-06-18T12:00:00+08:00", 0)
+	insert("01234", "Leading Zero", "2026-06-18T23:59:59+08:00", 0)
+	insert("01234", "Leading Zero", "2026-06-19T00:00:00+08:00", 0)
+
+	var first GoldRecordPage
+	env.getJSON(t, "/api/v1/gold/records/query?date=2026-06-18&page=1&pageSize=2", &first)
+	if first.Total != 4 || first.Page != 1 || first.PageSize != 2 || len(first.Records) != 2 {
+		t.Fatalf("first page = %#v", first)
+	}
+	if first.Records[0].Code != "01234" || first.Records[0].Time != "2026/6/18 23:59:59" {
+		t.Fatalf("first record = %#v", first.Records[0])
+	}
+
+	var second GoldRecordPage
+	env.getJSON(t, "/api/v1/gold/records/query?date=2026-06-18&page=2&pageSize=2", &second)
+	if second.Total != 4 || len(second.Records) != 2 {
+		t.Fatalf("second page = %#v", second)
+	}
+	if first.Records[1].ID <= second.Records[0].ID {
+		t.Fatalf("same-time records are not ordered by descending id: first=%d second=%d", first.Records[1].ID, second.Records[0].ID)
+	}
+	if second.Records[0].Code != "1234" || !second.Records[0].Voided {
+		t.Fatalf("voided record missing from result: %#v", second.Records[0])
+	}
+
+	var resident GoldRecordPage
+	residentPath := "/api/v1/gold/records/query?residentCode=" + url.QueryEscape(" 01234 ") + "&pageSize=100"
+	env.getJSON(t, residentPath, &resident)
+	if resident.Total != 5 || len(resident.Records) != 5 {
+		t.Fatalf("leading-zero resident page = %#v", resident)
+	}
+	for _, record := range resident.Records {
+		if record.Code != "01234" {
+			t.Fatalf("resident query matched a different opaque code: %#v", record)
+		}
+	}
+
+	var combined GoldRecordPage
+	env.getJSON(t, "/api/v1/gold/records/query?date=2026-06-18&residentCode=01234&pageSize=100", &combined)
+	if combined.Total != 3 || len(combined.Records) != 3 {
+		t.Fatalf("combined filters = %#v", combined)
+	}
+
+	var beyond GoldRecordPage
+	env.getJSON(t, "/api/v1/gold/records/query?date=2026-06-18&page=9&pageSize=2", &beyond)
+	if beyond.Total != 4 || len(beyond.Records) != 0 {
+		t.Fatalf("page beyond end = %#v", beyond)
+	}
+}
+
+func TestQueryGoldRecordsRejectsInvalidParameters(t *testing.T) {
+	env := newTestEnv(t)
+	paths := []string{
+		"/api/v1/gold/records/query?date=2026-02-30",
+		"/api/v1/gold/records/query?page=0",
+		"/api/v1/gold/records/query?page=-1",
+		"/api/v1/gold/records/query?page=abc",
+		"/api/v1/gold/records/query?pageSize=0",
+		"/api/v1/gold/records/query?pageSize=101",
+		"/api/v1/gold/records/query?pageSize=abc",
+	}
+	for _, path := range paths {
+		resp, err := http.Get(env.server.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("GET %s status=%d want %d", path, resp.StatusCode, http.StatusBadRequest)
+		}
+	}
+
+	req, err := http.NewRequest(http.MethodPost, env.server.URL+"/api/v1/gold/records/query", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST query status=%d want %d", resp.StatusCode, http.StatusMethodNotAllowed)
+	}
+}
+
 func TestCloseCityClearsPanelAndKeepsTravelExport(t *testing.T) {
 	env := newTestEnv(t)
 	env.openCity(t, "closer")

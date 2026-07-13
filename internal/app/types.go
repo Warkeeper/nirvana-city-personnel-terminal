@@ -97,6 +97,13 @@ type GoldRecordDTO struct {
 	Operator      string `json:"operator"`
 }
 
+type GoldRecordPage struct {
+	Records  []GoldRecordDTO `json:"records"`
+	Page     int             `json:"page"`
+	PageSize int             `json:"pageSize"`
+	Total    int             `json:"total"`
+}
+
 type SessionDTO struct {
 	Roles                         []RoleDTO        `json:"roles"`
 	Records                       []GoldRecordDTO  `json:"records"`
