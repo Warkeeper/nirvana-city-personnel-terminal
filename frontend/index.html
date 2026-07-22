@@ -1286,6 +1286,7 @@
                     @clear="resetMaintenanceSearch"
             ></el-input>
             <el-button type="primary" icon="el-icon-search" @click="searchMaintenanceResidents">搜索</el-button>
+            <el-button type="warning" icon="el-icon-plus" @click="openMaintenanceAddNpc">新增常驻居民</el-button>
         </div>
 
         <div v-if="maintenanceSearchPerformed && maintenanceResults.length" class="npc-config-list">

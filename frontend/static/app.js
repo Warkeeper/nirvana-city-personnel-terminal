@@ -446,6 +446,10 @@
                 this.maintenanceSelectedRole = null
                 this.maintenanceVisible = true
             },
+            openMaintenanceAddNpc() {
+                this.resetNpcAddForm()
+                this.npcAddVisible = true
+            },
             openCityLedger() {
                 this.ledgerMode = 'city'
                 this.ledgerResident = null
