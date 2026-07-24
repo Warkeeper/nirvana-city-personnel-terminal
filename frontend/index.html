@@ -1678,20 +1678,20 @@
                 </div>
             </template>
             <template v-else>
-                <div class="warning-text" style="margin-bottom:6px;color:#606266;">新居民可选择部门身份（默认追加“实习中”）、“自由人”独立身份，或选择“其它”后手动输入身份前缀（若为老居民，请输入编号后，点击搜索）</div>
+                <div class="warning-text" style="margin-bottom:6px;color:#606266;">新居民可选择固定部门身份（默认追加“实习中”），或选择“其它”后直接填写完整身份（若为老居民，请输入编号后，点击搜索）</div>
                 <el-radio-group v-model="newRoleDepartment" size="small" class="department-group">
-                    <el-radio-button v-for="dept in departments" :key="dept" :label="dept">{{ dept }}</el-radio-button>
+                    <el-radio-button v-for="dept in identityDepartmentOptions" :key="dept" :label="dept">{{ dept }}</el-radio-button>
                 </el-radio-group>
                 <el-input
                         v-if="newRoleDepartment === '其它'"
                         v-model.trim="newRoleCustomDepartment"
                         class="custom-department-input"
                         size="small"
-                        placeholder="请输入身份前缀，如：医疗部"
+                        placeholder="请输入完整身份，如：医疗顾问"
                 ></el-input>
                 <div class="balance-line" style="margin-top:8px;">
                     <span class="balance-label">将设置为：</span>
-                    <span class="balance-value">{{ newResidentIdentityPreview || '请选择部门' }}</span>
+                    <span class="balance-value">{{ newResidentIdentityPreview || (newRoleDepartment === '其它' ? '请输入完整身份' : '请选择部门') }}</span>
                 </div>
             </template>
         </div>
@@ -1979,25 +1979,25 @@
         <el-form label-position="top" style="margin-top:14px;">
             <el-form-item label="选择部门">
                 <el-radio-group v-model="identityDepartment" size="small" class="department-group">
-                    <el-radio-button v-for="dept in departments" :key="`identity-${dept}`" :label="dept">{{ dept }}</el-radio-button>
+                    <el-radio-button v-for="dept in identityDepartmentOptions" :key="`identity-${dept}`" :label="dept">{{ dept }}</el-radio-button>
                 </el-radio-group>
             </el-form-item>
-            <el-form-item v-if="identityDepartment === '其它'" label="其它身份前缀">
+            <el-form-item v-if="identityDepartment === '其它'" label="其它身份">
                 <el-input
                         v-model.trim="identityCustomDepartment"
                         class="custom-department-input"
                         size="small"
-                        placeholder="请输入身份前缀，如：医疗部"
+                        placeholder="请输入完整身份，如：医疗顾问"
                 ></el-input>
             </el-form-item>
-            <el-form-item v-if="identityDepartment !== '自由人'" label="选择状态">
+            <el-form-item v-if="identityDepartment !== '自由人' && identityDepartment !== '其它'" label="选择状态">
                 <el-radio-group v-model="identityStage" size="small">
                     <el-radio-button v-for="stage in identityStages" :key="`stage-${stage}`" :label="stage">{{ stage }}</el-radio-button>
                 </el-radio-group>
             </el-form-item>
             <div class="balance-line">
                 <span class="balance-label">新身份预览：</span>
-                <span class="balance-value">{{ selectedIdentityPreview || '请选择部门和状态' }}</span>
+                <span class="balance-value">{{ selectedIdentityPreview || (identityDepartment === '其它' ? '请输入完整身份' : '请选择部门和状态') }}</span>
             </div>
         </el-form>
 

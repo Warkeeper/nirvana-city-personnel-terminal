@@ -234,6 +234,9 @@
             latestOperationTimeText() { return this.session.latestOperation?.time || '暂无' },
             latestOperationContentText() { return this.session.latestOperation?.content || '暂无' },
             needsImport() { return !this.session.currentSession },
+            identityDepartmentOptions() {
+                return this.departments.filter(dept => dept !== '自由人')
+            },
             newResidentIdentityPreview() {
                 return this.newRoleDepartment ? this.buildIdentity(this.newRoleDepartment, '实习中', this.newRoleCustomDepartment) : ''
             },
@@ -623,21 +626,21 @@
             buildIdentity(department, stage, customDepartment = '') {
                 if (!department) return ''
                 if (department === '自由人') return '自由人'
-                const identityDepartment = department === '其它' ? String(customDepartment || '').trim() : department
-                if (!identityDepartment || !stage) return ''
-                return `${identityDepartment}${stage}`
+                if (department === '其它') return String(customDepartment || '').trim()
+                if (!stage) return ''
+                return `${department}${stage}`
             },
             parseIdentityText(identityText) {
                 const raw = String(identityText || '').trim()
                 if (!raw || raw === '未设置') return {department: this.departments[0], stage: this.identityStages[0], customDepartment: ''}
-                if (raw === '自由人') return {department: '自由人', stage: this.identityStages[0], customDepartment: ''}
+                if (raw === '自由人') return {department: '其它', stage: this.identityStages[0], customDepartment: raw}
                 const matchedStage = this.identityStages.find(x => raw.endsWith(x))
-                const stage = matchedStage || this.identityStages[0]
                 const departmentText = matchedStage ? raw.slice(0, -matchedStage.length).trim() : raw
                 const fixedDepartments = this.departments.filter(dept => dept !== '自由人' && dept !== '其它')
-                const department = fixedDepartments.includes(departmentText) ? departmentText : '其它'
-                const customDepartment = department === '其它' ? departmentText : ''
-                return {department, stage, customDepartment}
+                if (matchedStage && fixedDepartments.includes(departmentText)) {
+                    return {department: departmentText, stage: matchedStage, customDepartment: ''}
+                }
+                return {department: '其它', stage: this.identityStages[0], customDepartment: raw}
             },
             async exportCurrentData() {
                 const link = document.createElement('a')
@@ -888,12 +891,15 @@
                 const roleCode = this.normalizeResidentCode(this.newRoleCode)
                 const roleName = String(this.newRoleName || '').trim()
                 if (!roleCode || !roleName) return this.$message.error('请填写姓名和编号')
+                if (!this.matchedHistoricalPlayer && !/^\d{5}$/.test(roleCode)) {
+                    return this.$message.error('新增居民编号必须为5位数字，例如 1890 应填写为 01890')
+                }
                 if (this.isPlaceholderResidentName(roleName)) return this.$message.error('请填写真实姓名')
                 if (this.residentCodeExists(this.players, roleCode)) return this.$message.error('该居民已在当前城邦中')
                 if (this.newRoleStayHours <= 0) return this.$message.error('进城时长必须大于 0')
                 if (!this.newRoleEnterTime) return this.$message.error('请选择进城时间')
                 const defaultIdentity = this.matchedHistoricalPlayer ? (this.newRoleIdentity || '未设置') : this.buildIdentity(this.newRoleDepartment, '实习中', this.newRoleCustomDepartment)
-                if (!defaultIdentity) return this.$message.error(this.newRoleDepartment === '其它' ? '请输入其它身份前缀' : '请选择部门')
+                if (!defaultIdentity) return this.$message.error(this.newRoleDepartment === '其它' ? '请输入其它身份' : '请选择部门')
                 try {
                     await this.write('/api/v1/residents/player/enter', {
                         code: roleCode,
@@ -1039,8 +1045,8 @@
             },
             async submitIdentity() {
                 if (!this.identityDepartment) return this.$message.warning('请选择部门')
-                if (this.identityDepartment !== '自由人' && !this.identityStage) return this.$message.warning('请选择状态')
-                if (this.identityDepartment === '其它' && !String(this.identityCustomDepartment || '').trim()) return this.$message.warning('请输入其它身份前缀')
+                if (this.identityDepartment !== '自由人' && this.identityDepartment !== '其它' && !this.identityStage) return this.$message.warning('请选择状态')
+                if (this.identityDepartment === '其它' && !String(this.identityCustomDepartment || '').trim()) return this.$message.warning('请输入其它身份')
                 const identityText = this.buildIdentity(this.identityDepartment, this.identityStage, this.identityCustomDepartment)
                 const code = this.normalizeResidentCode(this.currentRole && this.currentRole.code)
                 try {
